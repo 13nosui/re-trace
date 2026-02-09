@@ -11,10 +11,26 @@ local Types = require(ReplicatedStorage.Shared.Types)
 -- 設定・定数
 local ROOM_TEMPLATE = ServerStorage:WaitForChild("RoomTemplate")
 local GHOST_TEMPLATE = ReplicatedStorage:WaitForChild("Ghost")
-local ANOMALY_CHANCE = 0.3 -- 30%の確率で異変発生
-local ANOMALY_SPEED = 3.0 -- 異変時のゴースト速度（3倍速）
+local ANOMALY_CHANCE = 0.4 -- 40%の確率で何らかの異変発生
 
--- 通信用のRemoteEventを確保
+-- ★ 異変カタログ（ここを編集してバリエーションを増やす！）
+-- Speed: 再生速度 (1.0が基準)
+-- Scale: 体の大きさ (1.0が基準)
+-- Transparency: 透明度 (0.5が基準)
+-- Color: 体の色 (nilなら変化なし)
+local ANOMALY_CATALOG = {
+	{ Name = "FastWalk", Speed = 1.3, Scale = 1.0, Transparency = 0.5, Color = nil }, -- ちょっと速い
+	{ Name = "SlowWalk", Speed = 0.75, Scale = 1.0, Transparency = 0.5, Color = nil }, -- ちょっと遅い
+	{ Name = "BigGhost", Speed = 1.0, Scale = 1.25, Transparency = 0.5, Color = nil }, -- ちょっと大きい
+	{ Name = "SmallGhost", Speed = 1.0, Scale = 0.75, Transparency = 0.5, Color = nil }, -- ちょっと小さい
+	{ Name = "FaintGhost", Speed = 1.0, Scale = 1.0, Transparency = 0.75, Color = nil }, -- 影が薄い
+	-- { Name = "RedGhost",     Speed = 1.0,  Scale = 1.0,  Transparency = 0.5, Color = Color3.fromRGB(255, 100, 100) }, -- (例) 明らかな異変
+}
+
+-- 正常時の設定
+local NORMAL_SETTINGS = { Speed = 1.0, Scale = 1.0, Transparency = 0.5, Color = Color3.fromRGB(100, 255, 255) }
+
+-- 通信用のRemoteEvent
 local remoteEvent = ReplicatedStorage:FindFirstChild("OnFloorChanged")
 if not remoteEvent then
 	remoteEvent = Instance.new("RemoteEvent")
@@ -29,7 +45,7 @@ type PlayerState = {
 	CurrentRoom: Model?,
 	Level: number,
 	LastGhostData: { Types.FrameData }?,
-	IsAnomaly: boolean, -- ★現在の部屋が異変かどうか
+	ActiveAnomaly: string?, -- ★発生中の異変名 (nilなら正常)
 }
 
 local playerStates: { [Player]: PlayerState } = {}
@@ -49,11 +65,25 @@ local function spawnRoom(player: Player, isReset: boolean)
 		state.CurrentRoom:Destroy()
 	end
 
-	-- 2. 異変の抽選（リセット直後のLevel 1では異変なしにする）
-	if isReset or state.Level == 1 then
-		state.IsAnomaly = false
+	-- 2. 異変の抽選
+	state.ActiveAnomaly = nil -- いったんリセット
+	local currentSettings = NORMAL_SETTINGS
+
+	-- レベル1以外、かつ確率に当選したら異変発生
+	if not isReset and state.Level > 1 and math.random() < ANOMALY_CHANCE then
+		-- カタログからランダムに1つ選ぶ
+		local anomaly = ANOMALY_CATALOG[math.random(1, #ANOMALY_CATALOG)]
+		state.ActiveAnomaly = anomaly.Name
+		currentSettings = {
+			Speed = anomaly.Speed,
+			Scale = anomaly.Scale,
+			Transparency = anomaly.Transparency,
+			Color = anomaly.Color or NORMAL_SETTINGS.Color,
+		}
+		print("⚠️ ANOMALY TRIGGERED:", anomaly.Name)
 	else
-		state.IsAnomaly = (math.random() < ANOMALY_CHANCE)
+		-- 正常
+		print("✅ Normal Room")
 	end
 
 	-- 3. 新しい部屋を生成
@@ -93,29 +123,29 @@ local function spawnRoom(player: Player, isReset: boolean)
 		character:PivotTo(spawnCFrame + Vector3.new(0, 3, 0))
 	end
 
-	-- 5. ゴーストの再生（異変なら高速再生！）
+	-- 5. ゴーストの生成と設定適用
 	if state.LastGhostData then
 		local ghost = GHOST_TEMPLATE:Clone()
 		ghost.Parent = newRoom
 
-		-- ゴーストの外見設定
-		for _, part in ghost:GetChildren() do
+		-- ★サイズの適用 (ScaleTo APIを使用)
+		if currentSettings.Scale ~= 1.0 then
+			ghost:ScaleTo(currentSettings.Scale)
+		end
+
+		-- ★見た目の適用
+		for _, part in ghost:GetDescendants() do
 			if part:IsA("BasePart") then
-				part.Transparency = 0.5
-				if state.IsAnomaly then
-					part.Color = Color3.fromRGB(255, 50, 50) -- 異変時は赤くする（テスト用）
-				else
-					part.Color = Color3.fromRGB(100, 255, 255) -- 通常は水色
-				end
+				part.Transparency = currentSettings.Transparency
+				part.Color = currentSettings.Color
+				part.CanCollide = false
+				part.CastShadow = false
 			end
 		end
 
-		-- ★スピード設定
-		local speed = state.IsAnomaly and ANOMALY_SPEED or 1.0
-
+		-- 再生開始
 		task.spawn(function()
-			-- 第4引数にスピードを渡す
-			GhostPlayback.Play(ghost, state.LastGhostData, entrance, speed)
+			GhostPlayback.Play(ghost, state.LastGhostData, entrance, currentSettings.Speed)
 		end)
 	end
 
@@ -152,8 +182,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 		end)
 	end
 
-	-- デバッグ表示（テスト中は答えを表示しておくと楽です）
-	print("🚪 Level:", state.Level, "| Anomaly:", state.IsAnomaly)
 	remoteEvent:FireClient(player, state.Level)
 end
 
@@ -168,7 +196,7 @@ function RoomManager.Init()
 				CurrentRoom = nil,
 				Level = 1,
 				LastGhostData = nil,
-				IsAnomaly = false,
+				ActiveAnomaly = nil,
 			}
 			task.wait(1)
 			spawnRoom(player, true)
@@ -192,11 +220,9 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 
 	local currentRecording = GhostRecorder.StopRecording(player)
 
-	-- ★修正: データがない（nil または 空）場合の対策
 	if not currentRecording or #currentRecording == 0 then
-		warn("⚠️ 録画データが空です。ゴーストは生成されません。")
-		-- 必要ならここで return して処理を中断したり、ダミーデータを入れたりできます
-		-- 今回はこのまま進めますが、LastGhostDataにはnilが入ります
+		-- エラー回避：データがないときは空データを入れておく
+		warn("⚠️ Recording data empty")
 	end
 
 	local isCorrect = false
@@ -204,34 +230,36 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 	-- ==========================================
 	-- ★ 正解・不正解の判定ロジック
 	-- ==========================================
-	if state.IsAnomaly then
-		-- 【異変あり】→ 「戻る（Entrance）」が正解
+	if state.ActiveAnomaly ~= nil then
+		-- 【異変あり (ActiveAnomalyに名前が入っている)】
+		-- 正解: Entrance (戻る)
 		if doorType == "Entrance" then
 			isCorrect = true
+			print("✅ 異変に気づいて引き返した！")
 		else
-			isCorrect = false -- 進んだらアウト
+			isCorrect = false
+			print("❌ 異変があるのに進んでしまった...")
 		end
 	else
-		-- 【異変なし】→ 「進む（Exit）」が正解
+		-- 【異変なし (ActiveAnomaly == nil)】
+		-- 正解: Exit (進む)
 		if doorType == "Exit" then
 			isCorrect = true
+			print("✅ 正常なので進んだ！")
 		else
-			isCorrect = false -- 戻ったらアウト（振り出しへ）
+			isCorrect = false
+			print("❌ 正常なのに戻ってしまった...")
 		end
 	end
 
 	if isCorrect then
-		print("✅ 正解！")
 		state.Level += 1
 		state.LastGhostData = currentRecording
-		-- 次の部屋へ（Reset=false）
-		spawnRoom(player, false)
+		spawnRoom(player, false) -- 次へ
 	else
-		print("❌ 不正解... Level 1へ")
 		state.Level = 1
 		state.LastGhostData = nil
-		-- 最初から（Reset=true）
-		spawnRoom(player, true)
+		spawnRoom(player, true) -- リセット
 	end
 end
 
