@@ -1,3 +1,4 @@
+-- src/server/services/GhostRecorder.lua
 --!strict
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -19,11 +20,14 @@ local RECORD_INTERVAL = 0.1
 
 --- 指定したプレイヤーの記録を開始する
 function GhostRecorder.StartRecording(player: Player, entrancePart: BasePart)
+	-- 既存の録画があれば停止
 	if activeRecordings[player] then
 		GhostRecorder.StopRecording(player)
 	end
 
 	local startTime = os.clock()
+
+	-- 初期状態の作成
 	local state: RecordingState = {
 		StartTime = startTime,
 		LastRecordTime = 0,
@@ -32,11 +36,14 @@ function GhostRecorder.StartRecording(player: Player, entrancePart: BasePart)
 		Connection = nil,
 	}
 
+	-- 録画処理
 	state.Connection = RunService.Heartbeat:Connect(function()
-		local character = player.Character
-		if not character then
+		-- プレイヤーが存在しない場合は何もしない
+		if not player or not player.Character then
 			return
 		end
+
+		local character = player.Character
 		local rootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
 		local humanoid = character:FindFirstChild("Humanoid") :: Humanoid?
 
@@ -45,13 +52,13 @@ function GhostRecorder.StartRecording(player: Player, entrancePart: BasePart)
 		end
 
 		local currentTime = os.clock()
-		local elapsedSinceStart = currentTime - startTime
 
-		-- 0.1秒間隔で間引く
+		-- RECORD_INTERVAL（0.1秒）ごとにデータを記録
 		if currentTime - state.LastRecordTime >= RECORD_INTERVAL then
 			state.LastRecordTime = currentTime
+			local elapsedSinceStart = currentTime - startTime
 
-			-- 現在再生中のアニメーションを取得
+			-- アニメーションIDの取得（簡易版）
 			local animId: string? = nil
 			local animator = humanoid:FindFirstChildOfClass("Animator")
 			if animator then
@@ -67,33 +74,44 @@ function GhostRecorder.StartRecording(player: Player, entrancePart: BasePart)
 				end
 			end
 
+			-- フレームデータの作成
 			local frame: FrameData = {
 				Time = elapsedSinceStart,
+				-- 入口からの相対座標を記録
 				RelCFrame = entrancePart.CFrame:ToObjectSpace(rootPart.CFrame),
 				AnimId = animId,
 			}
+
+			-- フレームを追加
 			table.insert(state.Frames, frame)
 		end
 	end)
 
+	-- テーブルに保存
 	activeRecordings[player] = state
+	print("📼 Start Recording for", player.Name)
 end
 
 --- 指定したプレイヤーの記録を停止し、データを返す
-function GhostRecorder.StopRecording(player: Player): { FrameData }
+function GhostRecorder.StopRecording(player: Player): { FrameData }?
 	local state = activeRecordings[player]
 	if not state then
-		return {}
+		warn("⚠️ StopRecording: No active recording for", player.Name)
+		return nil
 	end
 
+	-- イベント接続を解除
 	if state.Connection then
 		state.Connection:Disconnect()
 		state.Connection = nil
 	end
 
 	local frames = state.Frames
+
+	-- 録画データをクリア
 	activeRecordings[player] = nil
 
+	print("📼 Stop Recording for", player.Name, "| Frames:", #frames)
 	return frames
 end
 
