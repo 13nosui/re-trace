@@ -10,7 +10,15 @@ local Types = require(ReplicatedStorage.Shared.Types)
 
 -- 設定・定数
 local ROOM_TEMPLATE = ServerStorage:WaitForChild("RoomTemplate")
-local GHOST_TEMPLATE = ReplicatedStorage:WaitForChild("Ghost") -- Step 2で作ったダミー人形
+local GHOST_TEMPLATE = ReplicatedStorage:WaitForChild("Ghost")
+
+-- 通信用のRemoteEventを確保
+local remoteEvent = ReplicatedStorage:FindFirstChild("OnFloorChanged")
+if not remoteEvent then
+	remoteEvent = Instance.new("RemoteEvent")
+	remoteEvent.Name = "OnFloorChanged"
+	remoteEvent.Parent = ReplicatedStorage
+end
 
 local RoomManager = {}
 
@@ -40,20 +48,48 @@ local function spawnRoom(player: Player, isReset: boolean)
 	end
 
 	-- 2. 新しい部屋を生成
-	-- (本来は無限に前へ生成しますが、今回は簡易的に原点付近に再生成してテレポートさせます)
 	local newRoom = ROOM_TEMPLATE:Clone()
 	newRoom.Name = "Room_" .. player.Name
 	newRoom.Parent = workspace
 
-	-- 部屋の配置（プレイヤーごとに少しずらすなどの処理がいずれ必要ですが、今は原点でOK）
-	-- 毎回微妙に位置を変えるならここでSetPrimaryPartCFrameを使います
-	newRoom:PivotTo(CFrame.new(0, 100, 0)) -- テスト用に上空100mに生成
+	-- テスト用に上空へ配置
+	newRoom:PivotTo(CFrame.new(0, 100, 0))
+
+	-- ====================================================
+	-- ★ ランダムな出口の決定ロジック
+	-- ====================================================
+	local directions = { "Left", "Right", "Back" }
+	local chosenDirection = directions[math.random(1, #directions)] -- 3方向から1つランダムに選ぶ
+	local activeExit = nil
+
+	for _, dir in ipairs(directions) do
+		local wall = newRoom:FindFirstChild("Wall_" .. dir)
+		local exitPart = newRoom:FindFirstChild("Exit_" .. dir)
+
+		if dir == chosenDirection then
+			-- 【当選】この方向が正解ルート
+			-- 通れるように「壁」を消す
+			if wall then
+				wall:Destroy()
+			end
+			-- 「出口」は残して、判定用に使う
+			activeExit = exitPart
+		else
+			-- 【落選】この方向は壁
+			-- 間違って判定されないように「出口」を消す
+			if exitPart then
+				exitPart:Destroy()
+			end
+			-- 「壁」はそのまま残す（通せんぼするため）
+		end
+	end
+	-- ====================================================
 
 	state.CurrentRoom = newRoom
 	local entrance = newRoom:WaitForChild("Entrance") :: BasePart
-	local exit = newRoom:WaitForChild("Exit") :: BasePart
 
 	-- 3. プレイヤーを入り口へテレポート
+	-- (Entranceの手前ではなく、奥側へ移動させるための調整)
 	local spawnCFrame = entrance.CFrame * CFrame.new(0, 2, 4)
 	local character = player.Character
 	if character then
@@ -64,15 +100,14 @@ local function spawnRoom(player: Player, isReset: boolean)
 	if state.LastGhostData then
 		local ghost = GHOST_TEMPLATE:Clone()
 		ghost.Parent = newRoom
-		-- ゴーストの色を変えてわかりやすくする（オプション）
+		-- ゴーストの色を水色にして分かりやすくする
 		for _, part in ghost:GetChildren() do
 			if part:IsA("BasePart") then
 				part.Transparency = 0.5
-				part.Color = Color3.fromRGB(100, 255, 255) -- 水色
+				part.Color = Color3.fromRGB(100, 255, 255)
 			end
 		end
 
-		-- 非同期で再生開始
 		task.spawn(function()
 			GhostPlayback.Play(ghost, state.LastGhostData, entrance)
 		end)
@@ -83,13 +118,14 @@ local function spawnRoom(player: Player, isReset: boolean)
 
 	-- 6. ドア判定のイベント設定
 	local debounce = false
-	local spawnTime = os.clock() -- ★スポーンした時刻を記録
+	local spawnTime = os.clock()
+
 	local function onDoorTouched(hit, doorType)
 		if debounce then
 			return
 		end
 
-		-- ★追加: スポーンしてから1秒間は判定しない（無敵時間）
+		-- スポーン直後の無敵時間（1秒）
 		if os.clock() - spawnTime < 1.0 then
 			return
 		end
@@ -101,14 +137,24 @@ local function spawnRoom(player: Player, isReset: boolean)
 		end
 	end
 
-	entrance.Touched:Connect(function(hit)
-		onDoorTouched(hit, "Entrance")
-	end)
-	exit.Touched:Connect(function(hit)
-		onDoorTouched(hit, "Exit")
-	end)
+	-- Entranceの判定
+	if entrance then
+		entrance.Touched:Connect(function(hit)
+			onDoorTouched(hit, "Entrance")
+		end)
+	end
 
-	print("🚪 Room Level:", state.Level, isReset and "(Reset)" or "")
+	-- Exitの判定 (選ばれた出口のみ判定を行う)
+	if activeExit then
+		activeExit.Touched:Connect(function(hit)
+			onDoorTouched(hit, "Exit")
+		end)
+	end
+
+	print("🚪 Room Level:", state.Level, isReset and "(Reset)" or "", "Next:", chosenDirection)
+
+	-- クライアントに階層情報を送る
+	remoteEvent:FireClient(player, state.Level)
 end
 
 -- ---------------------------------------------------------
@@ -119,13 +165,11 @@ function RoomManager.Init()
 	-- プレイヤー参加時の初期化
 	game.Players.PlayerAdded:Connect(function(player)
 		player.CharacterAdded:Connect(function(character)
-			-- 状態をリセットしてスタート
 			playerStates[player] = {
 				CurrentRoom = nil,
 				Level = 1,
 				LastGhostData = nil,
 			}
-			-- 少し待ってから開始（ロード待ち）
 			task.wait(1)
 			spawnRoom(player, true)
 		end)
@@ -137,7 +181,7 @@ function RoomManager.Init()
 			playerStates[player].CurrentRoom:Destroy()
 		end
 		playerStates[player] = nil
-		GhostRecorder.StopRecording(player) -- 念のため停止
+		GhostRecorder.StopRecording(player)
 	end)
 end
 
@@ -154,13 +198,13 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 		-- ✅ 正解（進む）
 		print("✅ 正解！次の階層へ")
 		state.Level += 1
-		state.LastGhostData = currentRecording -- 今回の動きを次へ引き継ぐ
+		state.LastGhostData = currentRecording
 		spawnRoom(player, false)
 	elseif doorType == "Entrance" then
 		-- ❌ 不正解（戻る/リセット）
 		print("❌ 戻ります... レベル1へ")
 		state.Level = 1
-		state.LastGhostData = nil -- データ消去（または初期データがあればそれを使う）
+		state.LastGhostData = nil
 		spawnRoom(player, true)
 	end
 end
