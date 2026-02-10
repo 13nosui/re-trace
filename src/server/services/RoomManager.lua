@@ -80,10 +80,8 @@ local function createTamperedData(originalFrames: { Types.FrameData }, anomalyNa
 	end
 
 	if anomalyName == "GhostAttack" then
-		-- 現在の部屋にあるVictimを探す
 		local victim = nil
 		for _, v in ipairs(workspace:GetChildren()) do
-			-- ゴーストは "Victim" という名前のモデルだけを狙う
 			if v.Name:match("Room_") and v:FindFirstChild("Victim") then
 				victim = v.Victim
 				break
@@ -96,7 +94,6 @@ local function createTamperedData(originalFrames: { Types.FrameData }, anomalyNa
 				local victimRoot = victim:FindFirstChild("HumanoidRootPart") or victim.PrimaryPart
 				if victimRoot then
 					local victimRelPos = entrance.CFrame:PointToObjectSpace(victimRoot.Position)
-
 					local closestDist = 9999
 					local closestIndex = 1
 
@@ -171,12 +168,10 @@ local function spawnRoom(player: Player, isReset: boolean)
 		return
 	end
 
-	-- 1. 古い部屋の削除
 	if state.CurrentRoom then
 		state.CurrentRoom:Destroy()
 	end
 
-	-- 2. 異変の抽選
 	state.ActiveAnomaly = nil
 	if not isReset and state.Level > 1 and math.random() < ANOMALY_CHANCE then
 		local anomaly = ANOMALY_CATALOG[math.random(1, #ANOMALY_CATALOG)]
@@ -186,7 +181,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 		print("✅ Normal Room")
 	end
 
-	-- 3. 新しい部屋を生成
 	local newRoom = ROOM_TEMPLATE:Clone()
 	newRoom.Name = "Room_" .. player.Name
 	newRoom.Parent = workspace
@@ -194,16 +188,12 @@ local function spawnRoom(player: Player, isReset: boolean)
 
 	state.CurrentRoom = newRoom
 
-	-- 床の基準高さを取得
 	local floor = newRoom:WaitForChild("Floor", 5)
 	local floorY = 0
 	if floor then
-		-- 床の上面のY座標
 		floorY = floor.Position.Y + (floor.Size.Y / 2)
-		print("DEBUG: Floor found at Y=" .. floorY)
 	else
 		floorY = newRoom:GetPivot().Position.Y
-		warn("DEBUG: Floor NOT found, using Pivot Y=" .. floorY)
 	end
 
 	local entrance = newRoom:WaitForChild("Entrance") :: BasePart
@@ -213,6 +203,10 @@ local function spawnRoom(player: Player, isReset: boolean)
 	if character then
 		currentFollowerName = character:GetAttribute("FollowerName")
 		print("DEBUG: Current Follower is " .. tostring(currentFollowerName))
+
+		-- ★ 重要: 部屋に入った瞬間に情報をクリアする
+		-- これにより「連れてきたのはここまで。次の部屋には付いてこない」という仕組みになる
+		character:SetAttribute("FollowerName", nil)
 		character:SetAttribute("HasFollower", nil)
 	end
 
@@ -240,7 +234,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 		if aiScript then
 			aiScript:Destroy()
 		end
-		print("DEBUG: Victim spawned at center")
 	end
 
 	-- 4. 出口のランダム決定
@@ -256,14 +249,11 @@ local function spawnRoom(player: Player, isReset: boolean)
 			if wall then
 				wall:Destroy()
 			end
-
 			if exitPart then
 				activeExit = exitPart
 				exitPart.Transparency = 0
 				exitPart.Material = Enum.Material.Neon
 				exitPart.CanCollide = false
-			else
-				warn("⚠️ Exit_" .. dir .. " not found!")
 			end
 		else
 			if exitPart then
@@ -287,24 +277,19 @@ local function spawnRoom(player: Player, isReset: boolean)
 		exitBasePos = CFrame.lookAt(exitBasePos.Position, Vector3.new(roomPos.X, exitBasePos.Y, roomPos.Z))
 	end
 
-	local entranceBasePos = entrance.CFrame * CFrame.new(2, 0, 2)
+	local entranceBasePos = entrance.CFrame * CFrame.new(3, 0, 3)
 	entranceBasePos = CFrame.new(entranceBasePos.Position.X, floorY + 3, entranceBasePos.Position.Z)
 
-	-- ★死体の配置基準位置 (部屋の中央付近)
 	local deadBodyBasePos = CFrame.new(roomPos.X + 3, floorY, roomPos.Z + 3)
 
 	-- NPC生成ヘルパー関数
-	local function spawnNPC(template, name, positionCFrame, isDead, isPartner)
-		print("DEBUG: spawning NPC " .. name .. " Dead=" .. tostring(isDead))
+	local function spawnNPC(template, name, positionCFrame, isDead, isPartner, isChoice)
 		local npc = template:Clone()
 		npc.Name = isDead and (name .. "_Corpse") or name
 		npc.Parent = newRoom
 
 		if isDead then
-			-- ★【修正】物理演算に頼らず、手動で床に配置して固定する
-			print("💀 Creating Static Corpse for " .. npc.Name)
-
-			-- HumanoidとAIを消す
+			-- 死体処理
 			local hum = npc:FindFirstChild("Humanoid")
 			if hum then
 				hum:Destroy()
@@ -314,50 +299,83 @@ local function spawnRoom(player: Player, isReset: boolean)
 				ai:Destroy()
 			end
 
-			-- 1. ハイライトを追加（視認性向上）
-			local highlight = Instance.new("Highlight")
-			highlight.FillColor = Color3.new(1, 0, 0)
-			highlight.OutlineColor = Color3.new(0, 0, 0)
-			highlight.FillTransparency = 0.5
-			highlight.Parent = npc
-
-			-- 2. パーツをばら撒いて固定する
-			local partCount = 0
 			for _, part in npc:GetDescendants() do
 				if part:IsA("BasePart") then
-					-- 関節を壊す（見た目のため）
+					part.Color = Color3.fromRGB(100, 0, 0)
+					part.Material = Enum.Material.Slate
+					part.Transparency = 0
+					for _, child in part:GetChildren() do
+						if child:IsA("Decal") or child:IsA("Texture") then
+							child:Destroy()
+						end
+					end
 					for _, joint in part:GetChildren() do
 						if joint:IsA("Motor6D") or joint:IsA("Weld") then
 							joint:Destroy()
 						end
 					end
 
-					-- 座標計算: 基準点 + ランダムなズレ
-					-- Y座標は床(floorY) + パーツの半径くらい(0.5)
-					local offsetX = (math.random() - 0.5) * 6 -- 幅6スタッドに散らばる
+					local offsetX = (math.random() - 0.5) * 6
 					local offsetZ = (math.random() - 0.5) * 6
 					local randomRot = CFrame.Angles(math.random() * 6, math.random() * 6, math.random() * 6)
 
 					part.CFrame = CFrame.new(deadBodyBasePos.X + offsetX, floorY + 0.5, deadBodyBasePos.Z + offsetZ)
 						* randomRot
-					part.Anchored = true -- ★ここで固定！絶対に動かさない
-					part.CanCollide = false -- プレイヤーが躓かないように
-
-					partCount += 1
+					part.Anchored = true
+					part.CanCollide = false
 				end
 			end
-			print("DEBUG: Placed " .. partCount .. " corpse parts.")
-		else
-			-- 生存処理 (通常通り)
+		elseif isPartner then
+			-- ★ お別れ（さようなら）処理
 			npc:PivotTo(positionCFrame)
+
+			-- AIを消して動かなくする
+			local ai = npc:FindFirstChild("FollowerAI")
+			if ai then
+				ai:Destroy()
+			end
+
+			-- 吹き出しを追加
+			local head = npc:FindFirstChild("Head") or npc.PrimaryPart
+			if head then
+				local bgui = Instance.new("BillboardGui")
+				bgui.Size = UDim2.new(0, 200, 0, 50)
+				bgui.StudsOffset = Vector3.new(0, 2.5, 0)
+				bgui.Adornee = head
+				bgui.Parent = npc
+
+				local text = Instance.new("TextLabel")
+				text.Size = UDim2.new(1, 0, 1, 0)
+				text.BackgroundTransparency = 1
+				text.Text = "ありがとう…\n私はここまでにします"
+				text.TextColor3 = Color3.new(1, 1, 1)
+				text.TextStrokeTransparency = 0.5 -- 読みやすく黒フチ
+				text.TextScaled = true
+				text.Font = Enum.Font.GothamBold
+				text.Parent = bgui
+			end
+
 			for _, part in npc:GetDescendants() do
 				if part:IsA("BasePart") then
 					part.CollisionGroup = "Default"
 				end
 			end
+		elseif isChoice then
+			-- ★ 選択肢（Eキーで連れて行く）処理
+			npc:PivotTo(positionCFrame)
 
-			if isPartner and character then
-				character:SetAttribute("HasFollower", true)
+			local prompt = Instance.new("ProximityPrompt")
+			prompt.Name = "SelectPrompt"
+			prompt.ActionText = "連れて行く"
+			prompt.ObjectText = name
+			prompt.HoldDuration = 0.5
+			prompt.MaxActivationDistance = 15
+			prompt.Parent = npc
+
+			for _, part in npc:GetDescendants() do
+				if part:IsA("BasePart") then
+					part.CollisionGroup = "Default"
+				end
 			end
 		end
 	end
@@ -365,16 +383,17 @@ local function spawnRoom(player: Player, isReset: boolean)
 	-- パターン分岐
 	if currentFollowerName == "Follower_A" then
 		print("DEBUG: Case Follower_A detected")
-		spawnNPC(FOLLOWER_A, "Follower_A", entranceBasePos, false, true)
-		spawnNPC(FOLLOWER_B, "Follower_B", deadBodyBasePos, true, false)
+		spawnNPC(FOLLOWER_A, "Follower_A", entranceBasePos, false, true, false)
+		spawnNPC(FOLLOWER_B, "Follower_B", deadBodyBasePos, true, false, false)
 	elseif currentFollowerName == "Follower_B" then
 		print("DEBUG: Case Follower_B detected")
-		spawnNPC(FOLLOWER_B, "Follower_B", entranceBasePos, false, true)
-		spawnNPC(FOLLOWER_A, "Follower_A", deadBodyBasePos, true, false)
+		spawnNPC(FOLLOWER_B, "Follower_B", entranceBasePos, false, true, false)
+		spawnNPC(FOLLOWER_A, "Follower_A", deadBodyBasePos, true, false, false)
 	else
-		print("DEBUG: Case None (First Run)")
-		spawnNPC(FOLLOWER_A, "Follower_A", exitBasePos * CFrame.new(-6, 0, 0), false, false)
-		spawnNPC(FOLLOWER_B, "Follower_B", exitBasePos * CFrame.new(6, 0, 0), false, false)
+		print("DEBUG: Case None (Choice Run)")
+		-- 誰も連れていない部屋では、奥に選択肢として2人出現する
+		spawnNPC(FOLLOWER_A, "Follower_A", exitBasePos * CFrame.new(-6, 0, 0), false, false, true)
+		spawnNPC(FOLLOWER_B, "Follower_B", exitBasePos * CFrame.new(6, 0, 0), false, false, true)
 	end
 
 	-- プレイヤー移動
