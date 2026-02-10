@@ -2,6 +2,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
+local PhysicsService = game:GetService("PhysicsService") -- ★追加
 
 -- モジュールの読み込み
 local GhostRecorder = require(ServerScriptService.Server.services.GhostRecorder)
@@ -13,18 +14,28 @@ local ROOM_TEMPLATE = ServerStorage:WaitForChild("RoomTemplate")
 local GHOST_TEMPLATE = ReplicatedStorage:WaitForChild("Ghost")
 local ANOMALY_CHANCE = 0.4 -- 40%の確率で何らかの異変発生
 
--- ★ 異変カタログ（ここを編集してバリエーションを増やす！）
--- Speed: 再生速度 (1.0が基準)
--- Scale: 体の大きさ (1.0が基準)
--- Transparency: 透明度 (0.5が基準)
--- Color: 体の色 (nilなら変化なし)
+-- ★ コリジョングループの設定
+local GHOST_GROUP = "GhostGroup"
+-- グループの登録とルール設定（エラー回避のためpcallで囲む）
+task.spawn(function()
+	local success, _ = pcall(function()
+		PhysicsService:RegisterCollisionGroup(GHOST_GROUP)
+	end)
+	pcall(function()
+		-- ゴーストは「Default（プレイヤー含む）」と衝突しない
+		PhysicsService:CollisionGroupSetCollidable(GHOST_GROUP, "Default", false)
+		-- ゴースト同士も衝突しない
+		PhysicsService:CollisionGroupSetCollidable(GHOST_GROUP, GHOST_GROUP, false)
+	end)
+end)
+
+-- ★ 異変カタログ
 local ANOMALY_CATALOG = {
-	{ Name = "FastWalk", Speed = 1.3, Scale = 1.0, Transparency = 0.5, Color = nil }, -- ちょっと速い
-	{ Name = "SlowWalk", Speed = 0.75, Scale = 1.0, Transparency = 0.5, Color = nil }, -- ちょっと遅い
-	{ Name = "BigGhost", Speed = 1.0, Scale = 1.25, Transparency = 0.5, Color = nil }, -- ちょっと大きい
-	{ Name = "SmallGhost", Speed = 1.0, Scale = 0.75, Transparency = 0.5, Color = nil }, -- ちょっと小さい
-	{ Name = "FaintGhost", Speed = 1.0, Scale = 1.0, Transparency = 0.75, Color = nil }, -- 影が薄い
-	-- { Name = "RedGhost",     Speed = 1.0,  Scale = 1.0,  Transparency = 0.5, Color = Color3.fromRGB(255, 100, 100) }, -- (例) 明らかな異変
+	{ Name = "FastWalk", Speed = 1.3, Scale = 1.0, Transparency = 0.5, Color = nil },
+	{ Name = "SlowWalk", Speed = 0.75, Scale = 1.0, Transparency = 0.5, Color = nil },
+	{ Name = "BigGhost", Speed = 1.0, Scale = 1.25, Transparency = 0.5, Color = nil },
+	{ Name = "SmallGhost", Speed = 1.0, Scale = 0.75, Transparency = 0.5, Color = nil },
+	{ Name = "FaintGhost", Speed = 1.0, Scale = 1.0, Transparency = 0.75, Color = nil },
 }
 
 -- 正常時の設定
@@ -40,12 +51,11 @@ end
 
 local RoomManager = {}
 
--- プレイヤーごとの状態管理
 type PlayerState = {
 	CurrentRoom: Model?,
 	Level: number,
 	LastGhostData: { Types.FrameData }?,
-	ActiveAnomaly: string?, -- ★発生中の異変名 (nilなら正常)
+	ActiveAnomaly: string?,
 }
 
 local playerStates: { [Player]: PlayerState } = {}
@@ -66,12 +76,10 @@ local function spawnRoom(player: Player, isReset: boolean)
 	end
 
 	-- 2. 異変の抽選
-	state.ActiveAnomaly = nil -- いったんリセット
+	state.ActiveAnomaly = nil
 	local currentSettings = NORMAL_SETTINGS
 
-	-- レベル1以外、かつ確率に当選したら異変発生
 	if not isReset and state.Level > 1 and math.random() < ANOMALY_CHANCE then
-		-- カタログからランダムに1つ選ぶ
 		local anomaly = ANOMALY_CATALOG[math.random(1, #ANOMALY_CATALOG)]
 		state.ActiveAnomaly = anomaly.Name
 		currentSettings = {
@@ -82,7 +90,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 		}
 		print("⚠️ ANOMALY TRIGGERED:", anomaly.Name)
 	else
-		-- 正常
 		print("✅ Normal Room")
 	end
 
@@ -128,31 +135,32 @@ local function spawnRoom(player: Player, isReset: boolean)
 		local ghost = GHOST_TEMPLATE:Clone()
 		ghost.Parent = newRoom
 
-		-- ★サイズの適用 (ScaleTo APIを使用)
 		if currentSettings.Scale ~= 1.0 then
 			ghost:ScaleTo(currentSettings.Scale)
 		end
 
-		-- ★見た目の適用
+		-- ★見た目とコリジョンの適用
 		for _, part in ghost:GetDescendants() do
 			if part:IsA("BasePart") then
 				part.Transparency = currentSettings.Transparency
 				part.Color = currentSettings.Color
-				part.CanCollide = false
+				part.CanCollide = false -- 念のためオフにするが、Humanoidがいると強制オンになることがある
 				part.CastShadow = false
+
+				-- ★ここでグループを設定して衝突を回避
+				part.CollisionGroup = GHOST_GROUP
 			end
 		end
 
-		-- 再生開始
 		task.spawn(function()
 			GhostPlayback.Play(ghost, state.LastGhostData, entrance, currentSettings.Speed)
 		end)
 	end
 
-	-- 6. 新規録画の開始
+	-- 6. 新規録画
 	GhostRecorder.StartRecording(player, entrance)
 
-	-- 7. ドア判定イベント
+	-- 7. ドア判定
 	local debounce = false
 	local spawnTime = os.clock()
 
@@ -221,18 +229,12 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 	local currentRecording = GhostRecorder.StopRecording(player)
 
 	if not currentRecording or #currentRecording == 0 then
-		-- エラー回避：データがないときは空データを入れておく
 		warn("⚠️ Recording data empty")
 	end
 
 	local isCorrect = false
 
-	-- ==========================================
-	-- ★ 正解・不正解の判定ロジック
-	-- ==========================================
 	if state.ActiveAnomaly ~= nil then
-		-- 【異変あり (ActiveAnomalyに名前が入っている)】
-		-- 正解: Entrance (戻る)
 		if doorType == "Entrance" then
 			isCorrect = true
 			print("✅ 異変に気づいて引き返した！")
@@ -241,8 +243,6 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 			print("❌ 異変があるのに進んでしまった...")
 		end
 	else
-		-- 【異変なし (ActiveAnomaly == nil)】
-		-- 正解: Exit (進む)
 		if doorType == "Exit" then
 			isCorrect = true
 			print("✅ 正常なので進んだ！")
@@ -255,11 +255,11 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 	if isCorrect then
 		state.Level += 1
 		state.LastGhostData = currentRecording
-		spawnRoom(player, false) -- 次へ
+		spawnRoom(player, false)
 	else
 		state.Level = 1
 		state.LastGhostData = nil
-		spawnRoom(player, true) -- リセット
+		spawnRoom(player, true)
 	end
 end
 
