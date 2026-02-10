@@ -2,7 +2,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
-local PhysicsService = game:GetService("PhysicsService") -- ★追加
+local PhysicsService = game:GetService("PhysicsService")
 
 -- モジュールの読み込み
 local GhostRecorder = require(ServerScriptService.Server.services.GhostRecorder)
@@ -12,34 +12,27 @@ local Types = require(ReplicatedStorage.Shared.Types)
 -- 設定・定数
 local ROOM_TEMPLATE = ServerStorage:WaitForChild("RoomTemplate")
 local GHOST_TEMPLATE = ReplicatedStorage:WaitForChild("Ghost")
-local ANOMALY_CHANCE = 0.4 -- 40%の確率で何らかの異変発生
+local ANOMALY_CHANCE = 0.5 -- 50%の確率で異変（攻撃）
+-- ★ ゴーストのスタイル定義
+local GHOST_COLOR = Color3.fromRGB(100, 200, 255) -- 青白い色
+local GHOST_MATERIAL = Enum.Material.Neon -- 発光するマテリアル
+
+-- ★ 異変カタログ（シンプルに「攻撃する」のみ）
+local ANOMALY_CATALOG = {
+	{ Name = "GhostAttack" },
+}
 
 -- ★ コリジョングループの設定
 local GHOST_GROUP = "GhostGroup"
--- グループの登録とルール設定（エラー回避のためpcallで囲む）
 task.spawn(function()
-	local success, _ = pcall(function()
+	pcall(function()
 		PhysicsService:RegisterCollisionGroup(GHOST_GROUP)
 	end)
 	pcall(function()
-		-- ゴーストは「Default（プレイヤー含む）」と衝突しない
 		PhysicsService:CollisionGroupSetCollidable(GHOST_GROUP, "Default", false)
-		-- ゴースト同士も衝突しない
 		PhysicsService:CollisionGroupSetCollidable(GHOST_GROUP, GHOST_GROUP, false)
 	end)
 end)
-
--- ★ 異変カタログ
-local ANOMALY_CATALOG = {
-	{ Name = "FastWalk", Speed = 1.3, Scale = 1.0, Transparency = 0.5, Color = nil },
-	{ Name = "SlowWalk", Speed = 0.75, Scale = 1.0, Transparency = 0.5, Color = nil },
-	{ Name = "BigGhost", Speed = 1.0, Scale = 1.25, Transparency = 0.5, Color = nil },
-	{ Name = "SmallGhost", Speed = 1.0, Scale = 0.75, Transparency = 0.5, Color = nil },
-	{ Name = "FaintGhost", Speed = 1.0, Scale = 1.0, Transparency = 0.75, Color = nil },
-}
-
--- 正常時の設定
-local NORMAL_SETTINGS = { Speed = 1.0, Scale = 1.0, Transparency = 0.5, Color = Color3.fromRGB(100, 255, 255) }
 
 -- 通信用のRemoteEvent
 local remoteEvent = ReplicatedStorage:FindFirstChild("OnFloorChanged")
@@ -60,6 +53,60 @@ type PlayerState = {
 
 local playerStates: { [Player]: PlayerState } = {}
 
+-- =========================================================
+-- ★ データ改ざん関数 (異変の正体)
+-- プレイヤーの動きはそのままで、Victimの近くを通ったときだけ
+-- 「ナイフを持って攻撃した」ことにデータを書き換える
+-- =========================================================
+local function createTamperedData(originalFrames: { Types.FrameData }): { Types.FrameData }
+	-- Victimの場所（Entranceからの相対座標）を計算しておく
+	-- ※RoomTemplate内の配置を基準にする
+	local victim = ROOM_TEMPLATE:FindFirstChild("Victim")
+	local entrance = ROOM_TEMPLATE:FindFirstChild("Entrance")
+
+	if not victim or not entrance then
+		warn("⚠️ Victim or Entrance not found in RoomTemplate")
+		return originalFrames
+	end
+
+	local victimRoot = victim:FindFirstChild("HumanoidRootPart") or victim.PrimaryPart
+	if not victimRoot then
+		return originalFrames
+	end
+
+	-- Entranceから見たVictimの位置
+	local victimRelPos = entrance.CFrame:PointToObjectSpace(victimRoot.Position)
+
+	-- データをコピーして書き換える
+	local newFrames = {}
+
+	for _, frame in ipairs(originalFrames) do
+		-- フレームを複製（元のデータを壊さないため）
+		local newFrame = table.clone(frame)
+
+		-- このフレームでのゴーストの位置
+		local ghostPos = newFrame.RelCFrame.Position
+
+		-- Victimとの距離を測る
+		local dist = (ghostPos - victimRelPos).Magnitude
+
+		-- 距離が近い場合、殺意を芽生えさせる
+		if dist < 15 then
+			-- 15スタッド以内ならナイフを取り出す
+			newFrame.EquippedTool = "Knife"
+		end
+
+		if dist < 8 then
+			-- 8スタッド以内なら攻撃しまくる
+			newFrame.IsAttacking = true
+		end
+
+		table.insert(newFrames, newFrame)
+	end
+
+	return newFrames
+end
+
 -- ---------------------------------------------------------
 -- 内部関数
 -- ---------------------------------------------------------
@@ -77,17 +124,10 @@ local function spawnRoom(player: Player, isReset: boolean)
 
 	-- 2. 異変の抽選
 	state.ActiveAnomaly = nil
-	local currentSettings = NORMAL_SETTINGS
 
 	if not isReset and state.Level > 1 and math.random() < ANOMALY_CHANCE then
 		local anomaly = ANOMALY_CATALOG[math.random(1, #ANOMALY_CATALOG)]
 		state.ActiveAnomaly = anomaly.Name
-		currentSettings = {
-			Speed = anomaly.Speed,
-			Scale = anomaly.Scale,
-			Transparency = anomaly.Transparency,
-			Color = anomaly.Color or NORMAL_SETTINGS.Color,
-		}
 		print("⚠️ ANOMALY TRIGGERED:", anomaly.Name)
 	else
 		print("✅ Normal Room")
@@ -130,30 +170,44 @@ local function spawnRoom(player: Player, isReset: boolean)
 		character:PivotTo(spawnCFrame + Vector3.new(0, 3, 0))
 	end
 
-	-- 5. ゴーストの生成と設定適用
+	-- 5. ゴーストの生成
 	if state.LastGhostData then
 		local ghost = GHOST_TEMPLATE:Clone()
 		ghost.Parent = newRoom
 
-		if currentSettings.Scale ~= 1.0 then
-			ghost:ScaleTo(currentSettings.Scale)
-		end
-
-		-- ★見た目とコリジョンの適用
+		-- ★ 見た目とコリジョンの設定
 		for _, part in ghost:GetDescendants() do
 			if part:IsA("BasePart") then
-				part.Transparency = currentSettings.Transparency
-				part.Color = currentSettings.Color
-				part.CanCollide = false -- 念のためオフにするが、Humanoidがいると強制オンになることがある
-				part.CastShadow = false
-
-				-- ★ここでグループを設定して衝突を回避
+				-- コリジョン設定
+				part.CanCollide = false
 				part.CollisionGroup = GHOST_GROUP
+
+				-- 見た目設定（青白く光らせる）
+				part.Material = GHOST_MATERIAL -- Neonにして発光させる
+				part.Color = GHOST_COLOR -- 青白い色にする
+				part.Transparency = 0 -- 不透明にする
+				part.CastShadow = false -- ゴースト自身の影は落とさない
+
+				-- 顔のDecalがあれば、それも青白くする（お好みで）
+				local decal = part:FindFirstChildOfClass("Decal")
+				if decal then
+					decal.Color3 = GHOST_COLOR
+				end
 			end
 		end
 
+		-- ★ ここでデータを分岐させる
+		local playbackData = state.LastGhostData
+
+		if state.ActiveAnomaly == "GhostAttack" then
+			-- 異変発生中なら、データを改ざんして「攻撃データ」にする
+			print("😈 Injecting Malice into Ghost Data...")
+			playbackData = createTamperedData(state.LastGhostData)
+		end
+
 		task.spawn(function()
-			GhostPlayback.Play(ghost, state.LastGhostData, entrance, currentSettings.Speed)
+			-- 改ざん済みのデータ（または正常データ）を再生
+			GhostPlayback.Play(ghost, playbackData, entrance, 1.0)
 		end)
 	end
 
@@ -228,21 +282,20 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 
 	local currentRecording = GhostRecorder.StopRecording(player)
 
-	if not currentRecording or #currentRecording == 0 then
-		warn("⚠️ Recording data empty")
-	end
-
+	-- 判定ロジック
 	local isCorrect = false
 
 	if state.ActiveAnomaly ~= nil then
+		-- 異変あり（ゴーストが勝手に攻撃した）→ 戻るのが正解
 		if doorType == "Entrance" then
 			isCorrect = true
-			print("✅ 異変に気づいて引き返した！")
+			print("✅ 異変（行動の食い違い）に気づいて引き返した！")
 		else
 			isCorrect = false
-			print("❌ 異変があるのに進んでしまった...")
+			print("❌ ゴーストが勝手に攻撃しているのに進んでしまった...")
 		end
 	else
+		-- 異変なし（プレイヤーと同じ行動）→ 進むのが正解
 		if doorType == "Exit" then
 			isCorrect = true
 			print("✅ 正常なので進んだ！")
