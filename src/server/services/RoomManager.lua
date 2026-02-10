@@ -46,6 +46,13 @@ if not remoteEvent then
 	remoteEvent.Parent = ReplicatedStorage
 end
 
+local jumpscareEvent = ReplicatedStorage:FindFirstChild("OnJumpscare")
+if not jumpscareEvent then
+	jumpscareEvent = Instance.new("RemoteEvent")
+	jumpscareEvent.Name = "OnJumpscare"
+	jumpscareEvent.Parent = ReplicatedStorage
+end
+
 local RoomManager = {}
 
 type PlayerState = {
@@ -340,6 +347,7 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 	end
 
 	local isCorrect = false
+	local isGameOver = false -- ★ゲームオーバーフラグ
 
 	if state.ActiveAnomaly ~= nil then
 		-- 異変あり
@@ -348,7 +356,8 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 			print("✅ 異変に気づいた！ (Anomaly: " .. state.ActiveAnomaly .. ")")
 		else
 			isCorrect = false
-			print("❌ 異変を見逃した... (Anomaly: " .. state.ActiveAnomaly .. ")")
+			isGameOver = true -- ★異変があるのに進んでしまった＝死
+			print("💀 GAMEOVER: 異変を見逃した... (Anomaly: " .. state.ActiveAnomaly .. ")")
 		end
 	else
 		-- 異変なし
@@ -357,7 +366,7 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 			print("✅ 正常なので進んだ！")
 		else
 			isCorrect = false
-			print("❌ 正常なのに戻ってしまった...")
+			print("❌ 正常なのに戻ってしまった... (ただの間違い)")
 		end
 	end
 
@@ -366,6 +375,18 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 		state.LastGhostData = currentRecording
 		spawnRoom(player, false)
 	else
+		-- 不正解時の処理
+
+		if isGameOver then
+			-- ★ジャンプスケア発動！
+			if jumpscareEvent then
+				jumpscareEvent:FireClient(player)
+			end
+
+			-- 演出の間、少し待ってからリセットする
+			task.wait(2.5)
+		end
+
 		state.Level = 1
 		state.LastGhostData = nil
 		spawnRoom(player, true)
