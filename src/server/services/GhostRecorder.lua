@@ -11,6 +11,11 @@ type RecordingState = {
 	EntrancePart: BasePart,
 	Frames: { FrameData },
 	Connection: RBXScriptConnection?,
+
+	-- ★追加: ツール監視用
+	ToolConnection: RBXScriptConnection?,
+	CurrentTool: Tool?,
+	AttackTriggered: boolean, -- 次のフレームで記録するためのフラグ
 }
 
 local GhostRecorder = {}
@@ -18,100 +23,133 @@ local GhostRecorder = {}
 local activeRecordings: { [Player]: RecordingState } = {}
 local RECORD_INTERVAL = 0.1
 
---- 指定したプレイヤーの記録を開始する
 function GhostRecorder.StartRecording(player: Player, entrancePart: BasePart)
-	-- 既存の録画があれば停止
 	if activeRecordings[player] then
 		GhostRecorder.StopRecording(player)
 	end
 
 	local startTime = os.clock()
 
-	-- 初期状態の作成
 	local state: RecordingState = {
 		StartTime = startTime,
 		LastRecordTime = 0,
 		EntrancePart = entrancePart,
 		Frames = {},
 		Connection = nil,
+		ToolConnection = nil,
+		CurrentTool = nil,
+		AttackTriggered = false,
 	}
 
-	-- 録画処理
+	-- ★ツールの装備・解除を監視する関数
+	local function connectTool(character)
+		-- 既存の接続を切る
+		if state.ToolConnection then
+			state.ToolConnection:Disconnect()
+		end
+		state.CurrentTool = nil
+
+		-- 今持っているツールを探す
+		local tool = character:FindFirstChildOfClass("Tool")
+		if tool then
+			state.CurrentTool = tool
+			-- クリック（攻撃）イベントを検知
+			state.ToolConnection = tool.Activated:Connect(function()
+				state.AttackTriggered = true
+			end)
+		end
+	end
+
+	-- キャラクターのツール変更を監視
+	local character = player.Character
+	if character then
+		-- 初期チェック
+		connectTool(character)
+
+		-- 装備が変わったら再接続
+		character.ChildAdded:Connect(function(child)
+			if child:IsA("Tool") then
+				connectTool(character)
+			end
+		end)
+		character.ChildRemoved:Connect(function(child)
+			if state.CurrentTool == child then
+				if state.ToolConnection then
+					state.ToolConnection:Disconnect()
+				end
+				state.CurrentTool = nil
+			end
+		end)
+	end
+
 	state.Connection = RunService.Heartbeat:Connect(function()
-		-- プレイヤーが存在しない場合は何もしない
 		if not player or not player.Character then
 			return
 		end
 
-		local character = player.Character
-		local rootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
-		local humanoid = character:FindFirstChild("Humanoid") :: Humanoid?
-
+		local rootPart = player.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local humanoid = player.Character:FindFirstChild("Humanoid") :: Humanoid?
 		if not rootPart or not humanoid then
 			return
 		end
 
 		local currentTime = os.clock()
 
-		-- RECORD_INTERVAL（0.1秒）ごとにデータを記録
 		if currentTime - state.LastRecordTime >= RECORD_INTERVAL then
 			state.LastRecordTime = currentTime
 			local elapsedSinceStart = currentTime - startTime
 
-			-- アニメーションIDの取得（簡易版）
 			local animId: string? = nil
 			local animator = humanoid:FindFirstChildOfClass("Animator")
 			if animator then
 				local tracks = animator:GetPlayingAnimationTracks()
-				local bestTrack: AnimationTrack? = nil
+				local bestTrack = nil
 				for _, track in tracks do
 					if not bestTrack or track.WeightCurrent > bestTrack.WeightCurrent then
 						bestTrack = track
 					end
 				end
-				if bestTrack and bestTrack.Animation then
+				if bestTrack then
 					animId = (bestTrack.Animation :: Animation).AnimationId
 				end
 			end
 
-			-- フレームデータの作成
+			local equippedToolName = state.CurrentTool and state.CurrentTool.Name or nil
+
 			local frame: FrameData = {
 				Time = elapsedSinceStart,
-				-- 入口からの相対座標を記録
 				RelCFrame = entrancePart.CFrame:ToObjectSpace(rootPart.CFrame),
 				AnimId = animId,
+				EquippedTool = equippedToolName,
+				IsAttacking = state.AttackTriggered, -- ★クリックしたか記録
 			}
 
-			-- フレームを追加
 			table.insert(state.Frames, frame)
+
+			-- フラグをリセット（次のフレームのために）
+			state.AttackTriggered = false
 		end
 	end)
 
-	-- テーブルに保存
 	activeRecordings[player] = state
 	print("📼 Start Recording for", player.Name)
 end
 
---- 指定したプレイヤーの記録を停止し、データを返す
 function GhostRecorder.StopRecording(player: Player): { FrameData }?
 	local state = activeRecordings[player]
 	if not state then
-		warn("⚠️ StopRecording: No active recording for", player.Name)
 		return nil
 	end
 
-	-- イベント接続を解除
 	if state.Connection then
 		state.Connection:Disconnect()
-		state.Connection = nil
 	end
+	if state.ToolConnection then
+		state.ToolConnection:Disconnect()
+	end -- ★解除忘れずに
 
 	local frames = state.Frames
-
-	-- 録画データをクリア
 	activeRecordings[player] = nil
-
-	print("📼 Stop Recording for", player.Name, "| Frames:", #frames)
 	return frames
 end
 
