@@ -16,22 +16,22 @@ local FOLLOWER_B = ServerStorage:WaitForChild("Follower_B")
 
 local ANOMALY_CHANCE = 0.6
 
--- ★ カタログに血文字部屋とメモ部屋を追加
 local EVENT_CATALOG = {
-	{ Name = "None", Weight = 30 }, -- 誰もいない部屋
-	{ Name = "Follower", Weight = 20 }, -- 選択を迫られる部屋
-	{ Name = "Victim", Weight = 15 }, -- 生贄がいる部屋
-	{ Name = "KnifeRoom", Weight = 15 }, -- ナイフが落ちている部屋
-	{ Name = "BloodText", Weight = 10 }, -- ★ 追加: 血文字部屋
-	{ Name = "MemoRoom", Weight = 10 }, -- ★ 追加: メモ部屋
+	{ Name = "None", Weight = 30 },
+	{ Name = "Follower", Weight = 20 },
+	{ Name = "Victim", Weight = 15 },
+	{ Name = "KnifeRoom", Weight = 15 },
+	{ Name = "BloodText", Weight = 10 },
+	{ Name = "MemoRoom", Weight = 10 },
 }
 
+-- ★ 異変カタログを更新
 local ANOMALY_CATALOG = {
 	{ Name = "GhostAttack" },
-	{ Name = "GhostStop" },
-	{ Name = "GhostBack" },
-	{ Name = "GhostWobble" },
-	{ Name = "GhostNoJump" },
+	{ Name = "GhostWobble" }, -- 元のちょうどいい千鳥足
+	{ Name = "GhostBounce" }, -- 異常な回数の連続ジャンプ
+	{ Name = "GhostWallRun" }, -- 壁への突進
+	{ Name = "GhostReverse" }, -- 完全逆再生
 }
 
 local GHOST_COLOR = Color3.fromRGB(100, 200, 255)
@@ -88,10 +88,8 @@ local function getRandomEvent()
 	for _, event in ipairs(EVENT_CATALOG) do
 		totalWeight += event.Weight
 	end
-
 	local randomValue = math.random() * totalWeight
 	local currentWeight = 0
-
 	for _, event in ipairs(EVENT_CATALOG) do
 		currentWeight += event.Weight
 		if randomValue <= currentWeight then
@@ -101,7 +99,9 @@ local function getRandomEvent()
 	return "None"
 end
 
--- データ改ざん関数
+-- ==========================================
+-- ★ データ改ざん関数（異変ロジック）
+-- ==========================================
 local function createTamperedData(originalFrames: { Types.FrameData }, anomalyName: string): { Types.FrameData }
 	local newFrames = {}
 	for _, frame in ipairs(originalFrames) do
@@ -149,37 +149,41 @@ local function createTamperedData(originalFrames: { Types.FrameData }, anomalyNa
 				end
 			end
 		end
-	elseif anomalyName == "GhostStop" then
-		local startIndex, durationFrames = math.floor(totalFrames * 0.4), 20
-		if startIndex + durationFrames < totalFrames then
-			local stopCFrame = newFrames[startIndex].RelCFrame
-			for i = 0, durationFrames do
-				newFrames[startIndex + i].RelCFrame = stopCFrame
-				newFrames[startIndex + i].AnimId = nil
-			end
-		end
-	elseif anomalyName == "GhostBack" then
-		local startIndex, durationFrames = math.floor(totalFrames * 0.5), 15
-		if startIndex + durationFrames < totalFrames then
-			for i = 0, durationFrames do
-				local frame = newFrames[startIndex + i]
-				frame.RelCFrame = frame.RelCFrame * CFrame.Angles(0, math.pi, 0)
-			end
-		end
 	elseif anomalyName == "GhostWobble" then
+		-- ★元のちょうどいい揺れ幅を維持
 		for _, frame in ipairs(newFrames) do
 			local wobble = math.sin(frame.Time * 5) * 2.5
 			frame.RelCFrame = frame.RelCFrame * CFrame.new(wobble, 0, 0)
 		end
-	elseif anomalyName == "GhostNoJump" then
+	elseif anomalyName == "GhostBounce" then
+		-- ★異常な「回数」の連続ジャンプ（小刻みに素早く跳ね続ける）
 		for _, frame in ipairs(newFrames) do
-			local x, y, z = frame.RelCFrame:ToEulerAnglesYXZ()
-			local pos = frame.RelCFrame.Position
-			if pos.Y > 3.5 then
-				frame.RelCFrame = CFrame.new(Vector3.new(pos.X, 3.0, pos.Z)) * CFrame.fromEulerAnglesYXZ(x, y, z)
-			end
+			-- time * 20 で非常に早い周期のジャンプを生み出す
+			local bounce = math.abs(math.sin(frame.Time * 20)) * 2.5
+			frame.RelCFrame = frame.RelCFrame * CFrame.new(0, bounce, 0)
 		end
+	elseif anomalyName == "GhostWallRun" then
+		-- 部屋の30%進んだあたりから、突然右の壁に向かって直進していく
+		local startIndex = math.floor(totalFrames * 0.3)
+		for i = startIndex, totalFrames do
+			local frame = newFrames[i]
+			local progress = (i - startIndex) * 0.4
+			frame.RelCFrame = frame.RelCFrame * CFrame.new(progress, 0, 0) * CFrame.Angles(0, -math.rad(60), 0)
+		end
+	elseif anomalyName == "GhostReverse" then
+		-- プレイヤーが歩いた軌跡を完全に「逆再生」する
+		local reversed = {}
+		for i = 1, totalFrames do
+			local targetFrame = originalFrames[totalFrames - i + 1]
+			local f = table.clone(newFrames[i])
+			f.RelCFrame = targetFrame.RelCFrame
+			f.AnimId = targetFrame.AnimId
+			f.EquippedTool = targetFrame.EquippedTool
+			table.insert(reversed, f)
+		end
+		return reversed
 	end
+
 	return newFrames
 end
 
@@ -251,9 +255,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 		defaultVictim:Destroy()
 	end
 
-	-- ==========================================
-	-- ★ イベントの配置
-	-- ==========================================
 	if roomEvent == "Victim" then
 		local victimModel = FOLLOWER_A:Clone()
 		if victimModel then
@@ -306,8 +307,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 				end
 			end
 		end)
-
-	-- ★ 追加: 血文字の部屋
 	elseif roomEvent == "BloodText" then
 		if floor then
 			local phrases = {
@@ -319,7 +318,7 @@ local function spawnRoom(player: Player, isReset: boolean)
 			}
 
 			local surfaceGui = Instance.new("SurfaceGui")
-			surfaceGui.Face = Enum.NormalId.Top -- 床面に表示
+			surfaceGui.Face = Enum.NormalId.Top
 			surfaceGui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
 			surfaceGui.PixelsPerStud = 30
 			surfaceGui.Parent = floor
@@ -329,22 +328,18 @@ local function spawnRoom(player: Player, isReset: boolean)
 			textLabel.BackgroundTransparency = 1
 			textLabel.Font = Enum.Font.Creepster
 			textLabel.Text = phrases[math.random(1, #phrases)]
-			textLabel.TextColor3 = Color3.fromRGB(150, 0, 0) -- 暗い血の色
+			textLabel.TextColor3 = Color3.fromRGB(150, 0, 0)
 			textLabel.TextScaled = true
-			textLabel.TextTransparency = 0.3 -- 少し床に馴染ませる
-			textLabel.Rotation = math.random(-10, 10) -- 少し傾ける
+			textLabel.TextTransparency = 0.3
+			textLabel.Rotation = math.random(-10, 10)
 			textLabel.Parent = surfaceGui
 		end
-
-	-- ★ 追加: メモの部屋
 	elseif roomEvent == "MemoRoom" then
 		local roomPos = newRoom:GetPivot().Position
-
-		-- 床に落ちている紙のモデル
 		local paper = Instance.new("Part")
 		paper.Name = "MemoPaper"
 		paper.Size = Vector3.new(1.2, 0.05, 1.5)
-		paper.Color = Color3.fromRGB(230, 220, 200) -- 黄ばんだ紙の色
+		paper.Color = Color3.fromRGB(230, 220, 200)
 		paper.Material = Enum.Material.Fabric
 		paper.CFrame = CFrame.new(roomPos.X + math.random(-3, 3), floorY + 0.05, roomPos.Z + math.random(-3, 3))
 			* CFrame.Angles(0, math.random() * math.pi, 0)
@@ -372,14 +367,11 @@ local function spawnRoom(player: Player, isReset: boolean)
 			if not pg then
 				return
 			end
-
-			-- 既存のUIがあれば消す
 			local oldUi = pg:FindFirstChild("MemoUI")
 			if oldUi then
 				oldUi:Destroy()
 			end
 
-			-- クライアントの画面にポップアップUIを作成
 			local sg = Instance.new("ScreenGui")
 			sg.Name = "MemoUI"
 			sg.ResetOnSpawn = false
@@ -409,10 +401,9 @@ local function spawnRoom(player: Player, isReset: boolean)
 			textLabel.Text = memoText
 			textLabel.TextColor3 = Color3.new(0.1, 0.1, 0.1)
 			textLabel.TextScaled = true
-			textLabel.Font = Enum.Font.Kalam -- 手書き風フォント
+			textLabel.Font = Enum.Font.Kalam
 			textLabel.Parent = paperBg
 
-			-- 閉じるボタン（一人称視点でもマウスが出るように Modal = true にする）
 			local closeBtn = Instance.new("TextButton")
 			closeBtn.AnchorPoint = Vector2.new(0.5, 1)
 			closeBtn.Position = UDim2.new(0.5, 0, 0.95, 0)
@@ -420,7 +411,7 @@ local function spawnRoom(player: Player, isReset: boolean)
 			closeBtn.Text = "閉じる"
 			closeBtn.Font = Enum.Font.GothamBold
 			closeBtn.TextScaled = true
-			closeBtn.Modal = true -- ★重要: これでマウスが表示されてクリック可能になる
+			closeBtn.Modal = true
 			closeBtn.Parent = paperBg
 
 			closeBtn.MouseButton1Click:Connect(function()
@@ -428,8 +419,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 			end)
 		end)
 	end
-
-	-- ==========================================
 
 	local directions = { "Left", "Right", "Back" }
 	local chosenDirection = directions[math.random(1, #directions)]
