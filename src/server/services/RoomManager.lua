@@ -16,22 +16,23 @@ local FOLLOWER_B = ServerStorage:WaitForChild("Follower_B")
 
 local ANOMALY_CHANCE = 0.6
 
+-- ★ カタログに KillerRoom を追加
 local EVENT_CATALOG = {
 	{ Name = "None", Weight = 30 },
 	{ Name = "Follower", Weight = 20 },
-	{ Name = "Victim", Weight = 15 },
+	{ Name = "Victim", Weight = 10 },
 	{ Name = "KnifeRoom", Weight = 15 },
 	{ Name = "BloodText", Weight = 10 },
 	{ Name = "MemoRoom", Weight = 10 },
+	{ Name = "KillerRoom", Weight = 15 }, -- ★ 追加: 襲いかかってくる部屋
 }
 
--- ★ 異変カタログを更新
 local ANOMALY_CATALOG = {
 	{ Name = "GhostAttack" },
-	{ Name = "GhostWobble" }, -- 元のちょうどいい千鳥足
-	{ Name = "GhostBounce" }, -- 異常な回数の連続ジャンプ
-	{ Name = "GhostWallRun" }, -- 壁への突進
-	{ Name = "GhostReverse" }, -- 完全逆再生
+	{ Name = "GhostWobble" },
+	{ Name = "GhostBounce" },
+	{ Name = "GhostWallRun" },
+	{ Name = "GhostReverse" },
 }
 
 local GHOST_COLOR = Color3.fromRGB(100, 200, 255)
@@ -99,9 +100,6 @@ local function getRandomEvent()
 	return "None"
 end
 
--- ==========================================
--- ★ データ改ざん関数（異変ロジック）
--- ==========================================
 local function createTamperedData(originalFrames: { Types.FrameData }, anomalyName: string): { Types.FrameData }
 	local newFrames = {}
 	for _, frame in ipairs(originalFrames) do
@@ -150,20 +148,16 @@ local function createTamperedData(originalFrames: { Types.FrameData }, anomalyNa
 			end
 		end
 	elseif anomalyName == "GhostWobble" then
-		-- ★元のちょうどいい揺れ幅を維持
 		for _, frame in ipairs(newFrames) do
 			local wobble = math.sin(frame.Time * 5) * 2.5
 			frame.RelCFrame = frame.RelCFrame * CFrame.new(wobble, 0, 0)
 		end
 	elseif anomalyName == "GhostBounce" then
-		-- ★異常な「回数」の連続ジャンプ（小刻みに素早く跳ね続ける）
 		for _, frame in ipairs(newFrames) do
-			-- time * 20 で非常に早い周期のジャンプを生み出す
 			local bounce = math.abs(math.sin(frame.Time * 20)) * 2.5
 			frame.RelCFrame = frame.RelCFrame * CFrame.new(0, bounce, 0)
 		end
 	elseif anomalyName == "GhostWallRun" then
-		-- 部屋の30%進んだあたりから、突然右の壁に向かって直進していく
 		local startIndex = math.floor(totalFrames * 0.3)
 		for i = startIndex, totalFrames do
 			local frame = newFrames[i]
@@ -171,7 +165,6 @@ local function createTamperedData(originalFrames: { Types.FrameData }, anomalyNa
 			frame.RelCFrame = frame.RelCFrame * CFrame.new(progress, 0, 0) * CFrame.Angles(0, -math.rad(60), 0)
 		end
 	elseif anomalyName == "GhostReverse" then
-		-- プレイヤーが歩いた軌跡を完全に「逆再生」する
 		local reversed = {}
 		for i = 1, totalFrames do
 			local targetFrame = originalFrames[totalFrames - i + 1]
@@ -255,6 +248,9 @@ local function spawnRoom(player: Player, isReset: boolean)
 		defaultVictim:Destroy()
 	end
 
+	-- ==========================================
+	-- ★ イベントの配置
+	-- ==========================================
 	if roomEvent == "Victim" then
 		local victimModel = FOLLOWER_A:Clone()
 		if victimModel then
@@ -316,7 +312,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 				"信 じ る な",
 				"永 遠 に 続 く",
 			}
-
 			local surfaceGui = Instance.new("SurfaceGui")
 			surfaceGui.Face = Enum.NormalId.Top
 			surfaceGui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
@@ -418,7 +413,99 @@ local function spawnRoom(player: Player, isReset: boolean)
 				sg:Destroy()
 			end)
 		end)
+
+	-- ★ 追加: キラー（殺人鬼）が襲ってくる部屋
+	elseif roomEvent == "KillerRoom" then
+		local roomPos = newRoom:GetPivot().Position
+		local killer = FOLLOWER_B:Clone()
+		killer.Name = "Killer"
+		killer.Parent = newRoom
+
+		-- 奥の方に配置
+		killer:PivotTo(CFrame.new(roomPos.X, floorY + 3, roomPos.Z + 15))
+
+		local hum = killer:WaitForChild("Humanoid")
+		local root = killer:WaitForChild("HumanoidRootPart")
+		hum.WalkSpeed = 15 -- プレイヤーより少しだけ遅い（逃げ切れる速度）
+
+		-- 既存のAIを消す
+		local ai = killer:FindFirstChild("FollowerAI")
+		if ai then
+			ai:Destroy()
+		end
+
+		-- キラーにナイフを持たせる
+		local toolsFolder = ReplicatedStorage:FindFirstChild("Tools")
+		if toolsFolder and toolsFolder:FindFirstChild("Knife") then
+			local kKnife = toolsFolder.Knife:Clone()
+			kKnife.Parent = killer
+		end
+
+		-- 【キラーの攻撃AI】プレイヤーを追いかけて、追いついたらダメージ
+		task.spawn(function()
+			while killer.Parent and hum.Health > 0 do
+				if
+					character
+					and character:FindFirstChild("HumanoidRootPart")
+					and character:FindFirstChild("Humanoid")
+				then
+					local pRoot = character.HumanoidRootPart
+					local pHum = character.Humanoid
+
+					if pHum.Health > 0 then
+						hum:MoveTo(pRoot.Position)
+						local dist = (pRoot.Position - root.Position).Magnitude
+						if dist < 4 then
+							-- プレイヤーにダメージを与える
+							pHum:TakeDamage(15)
+							task.wait(1) -- 連続ダメージを防ぐクールダウン
+						end
+					end
+				end
+				task.wait(0.2)
+			end
+		end)
+
+		-- 【プレイヤーの反撃処理】ナイフを振った時に近くにキラーがいれば倒せる
+		if character then
+			local toolConn
+			local function bindWeapon()
+				if toolConn then
+					toolConn:Disconnect()
+				end
+				local tool = character:FindFirstChild("Knife")
+				if tool then
+					toolConn = tool.Activated:Connect(function()
+						if hum.Health > 0 and character:FindFirstChild("HumanoidRootPart") then
+							local pRoot = character.HumanoidRootPart
+							local dist = (pRoot.Position - root.Position).Magnitude
+							if dist < 6.5 then -- プレイヤーの攻撃範囲（キラーより少し長い）
+								hum.Health = 0 -- 一撃で倒す
+								-- 倒した時のちょっとした演出
+								local blood = Instance.new("ParticleEmitter")
+								blood.Color = ColorSequence.new(Color3.fromRGB(150, 0, 0))
+								blood.Size = NumberSequence.new(1)
+								blood.Parent = root
+								blood:Emit(30)
+
+								print("⚔️ プレイヤーがキラーを撃退しました！")
+							end
+						end
+					end)
+				end
+			end
+
+			-- プレイヤーがナイフを「装備した時」にイベントを監視する
+			character.ChildAdded:Connect(function(child)
+				if child.Name == "Knife" then
+					bindWeapon()
+				end
+			end)
+			bindWeapon() -- 既に持っている場合のため
+		end
 	end
+
+	-- ==========================================
 
 	local directions = { "Left", "Right", "Back" }
 	local chosenDirection = directions[math.random(1, #directions)]
