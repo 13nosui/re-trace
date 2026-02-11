@@ -16,12 +16,14 @@ local FOLLOWER_B = ServerStorage:WaitForChild("Follower_B")
 
 local ANOMALY_CHANCE = 0.6
 
--- ★ 追加: イベントカタログに「KnifeRoom」を追加
+-- ★ カタログに血文字部屋とメモ部屋を追加
 local EVENT_CATALOG = {
 	{ Name = "None", Weight = 30 }, -- 誰もいない部屋
-	{ Name = "Follower", Weight = 30 }, -- 選択を迫られる部屋
-	{ Name = "Victim", Weight = 20 }, -- 生贄がいる部屋
-	{ Name = "KnifeRoom", Weight = 20 }, -- ★ 追加: ナイフが落ちている部屋
+	{ Name = "Follower", Weight = 20 }, -- 選択を迫られる部屋
+	{ Name = "Victim", Weight = 15 }, -- 生贄がいる部屋
+	{ Name = "KnifeRoom", Weight = 15 }, -- ナイフが落ちている部屋
+	{ Name = "BloodText", Weight = 10 }, -- ★ 追加: 血文字部屋
+	{ Name = "MemoRoom", Weight = 10 }, -- ★ 追加: メモ部屋
 }
 
 local ANOMALY_CATALOG = {
@@ -196,7 +198,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 	local character = player.Character
 	if character then
 		currentFollowerName = character:GetAttribute("FollowerName")
-		print("DEBUG: Current Follower is " .. tostring(currentFollowerName))
 		character:SetAttribute("FollowerName", nil)
 		character:SetAttribute("HasFollower", nil)
 	end
@@ -250,7 +251,9 @@ local function spawnRoom(player: Player, isReset: boolean)
 		defaultVictim:Destroy()
 	end
 
-	-- ★ 5. イベントの配置
+	-- ==========================================
+	-- ★ イベントの配置
+	-- ==========================================
 	if roomEvent == "Victim" then
 		local victimModel = FOLLOWER_A:Clone()
 		if victimModel then
@@ -264,27 +267,20 @@ local function spawnRoom(player: Player, isReset: boolean)
 				aiScript:Destroy()
 			end
 		end
-
-	-- ★ 追加: ナイフの配置処理
 	elseif roomEvent == "KnifeRoom" then
 		local roomPos = newRoom:GetPivot().Position
-
-		-- ダミーのナイフモデルを作成（銀色のパーツ）
 		local knifePart = Instance.new("Part")
 		knifePart.Name = "DroppedKnife"
 		knifePart.Size = Vector3.new(0.5, 0.2, 1.5)
-		knifePart.Color = Color3.fromRGB(180, 180, 180) -- 銀色
+		knifePart.Color = Color3.fromRGB(180, 180, 180)
 		knifePart.Material = Enum.Material.Metal
-		-- 床に少し寝かせて配置
 		knifePart.CFrame = CFrame.new(roomPos.X, floorY + 0.1, roomPos.Z)
 			* CFrame.Angles(0, math.random() * math.pi, math.pi / 2)
 		knifePart.Anchored = true
 		knifePart.CanCollide = false
 		knifePart.Parent = newRoom
 
-		-- Eキー（タップ）で拾えるプロンプト
 		local prompt = Instance.new("ProximityPrompt")
-		prompt.Name = "PickupPrompt"
 		prompt.ActionText = "拾う"
 		prompt.ObjectText = "ナイフ"
 		prompt.HoldDuration = 0.5
@@ -296,27 +292,144 @@ local function spawnRoom(player: Player, isReset: boolean)
 			if not char then
 				return
 			end
-
-			-- 既に持っているか確認
 			if triggerPlayer.Backpack:FindFirstChild("Knife") or char:FindFirstChild("Knife") then
-				prompt:Destroy() -- 持っていたらプロンプトだけ消す
+				prompt:Destroy()
 				return
 			end
-
-			-- ReplicatedStorage.Tools から本物のKnifeをコピーして渡す
 			local toolsFolder = ReplicatedStorage:FindFirstChild("Tools")
 			if toolsFolder then
 				local sourceKnife = toolsFolder:FindFirstChild("Knife")
 				if sourceKnife then
 					local newKnife = sourceKnife:Clone()
 					newKnife.Parent = triggerPlayer.Backpack
-					knifePart:Destroy() -- 拾ったら床から消える
+					knifePart:Destroy()
 				end
-			else
-				warn("⚠️ ReplicatedStorage に Tools フォルダが見つかりません！")
 			end
 		end)
+
+	-- ★ 追加: 血文字の部屋
+	elseif roomEvent == "BloodText" then
+		if floor then
+			local phrases = {
+				"逃 げ ろ",
+				"振 り 向 く な",
+				"こ こ は 地 獄 だ",
+				"信 じ る な",
+				"永 遠 に 続 く",
+			}
+
+			local surfaceGui = Instance.new("SurfaceGui")
+			surfaceGui.Face = Enum.NormalId.Top -- 床面に表示
+			surfaceGui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+			surfaceGui.PixelsPerStud = 30
+			surfaceGui.Parent = floor
+
+			local textLabel = Instance.new("TextLabel")
+			textLabel.Size = UDim2.new(1, 0, 1, 0)
+			textLabel.BackgroundTransparency = 1
+			textLabel.Font = Enum.Font.Creepster
+			textLabel.Text = phrases[math.random(1, #phrases)]
+			textLabel.TextColor3 = Color3.fromRGB(150, 0, 0) -- 暗い血の色
+			textLabel.TextScaled = true
+			textLabel.TextTransparency = 0.3 -- 少し床に馴染ませる
+			textLabel.Rotation = math.random(-10, 10) -- 少し傾ける
+			textLabel.Parent = surfaceGui
+		end
+
+	-- ★ 追加: メモの部屋
+	elseif roomEvent == "MemoRoom" then
+		local roomPos = newRoom:GetPivot().Position
+
+		-- 床に落ちている紙のモデル
+		local paper = Instance.new("Part")
+		paper.Name = "MemoPaper"
+		paper.Size = Vector3.new(1.2, 0.05, 1.5)
+		paper.Color = Color3.fromRGB(230, 220, 200) -- 黄ばんだ紙の色
+		paper.Material = Enum.Material.Fabric
+		paper.CFrame = CFrame.new(roomPos.X + math.random(-3, 3), floorY + 0.05, roomPos.Z + math.random(-3, 3))
+			* CFrame.Angles(0, math.random() * math.pi, 0)
+		paper.Anchored = true
+		paper.CanCollide = false
+		paper.Parent = newRoom
+
+		local memos = {
+			"あいつらは……\n本物じゃない。\n絶対に連れて行くな。",
+			"何度も同じ部屋を\n通っている気がする。\nもう疲れた……",
+			"ゴーストの正体が\n分かった。\nあれは私自身だ。",
+			"ナイフを見つけたら\n迷わず拾え。\nそして……",
+		}
+		local memoText = memos[math.random(1, #memos)]
+
+		local prompt = Instance.new("ProximityPrompt")
+		prompt.ActionText = "読む"
+		prompt.ObjectText = "古びたメモ"
+		prompt.HoldDuration = 0.2
+		prompt.MaxActivationDistance = 10
+		prompt.Parent = paper
+
+		prompt.Triggered:Connect(function(triggerPlayer)
+			local pg = triggerPlayer:FindFirstChild("PlayerGui")
+			if not pg then
+				return
+			end
+
+			-- 既存のUIがあれば消す
+			local oldUi = pg:FindFirstChild("MemoUI")
+			if oldUi then
+				oldUi:Destroy()
+			end
+
+			-- クライアントの画面にポップアップUIを作成
+			local sg = Instance.new("ScreenGui")
+			sg.Name = "MemoUI"
+			sg.ResetOnSpawn = false
+			sg.Parent = pg
+
+			local bg = Instance.new("Frame")
+			bg.Size = UDim2.new(1, 0, 1, 0)
+			bg.BackgroundColor3 = Color3.new(0, 0, 0)
+			bg.BackgroundTransparency = 0.5
+			bg.Parent = sg
+
+			local paperBg = Instance.new("Frame")
+			paperBg.AnchorPoint = Vector2.new(0.5, 0.5)
+			paperBg.Position = UDim2.new(0.5, 0, 0.5, 0)
+			paperBg.Size = UDim2.new(0.6, 0, 0.5, 0)
+			paperBg.BackgroundColor3 = Color3.fromRGB(240, 230, 210)
+			paperBg.Parent = bg
+
+			local constraint = Instance.new("UISizeConstraint")
+			constraint.MaxSize = Vector2.new(600, 500)
+			constraint.Parent = paperBg
+
+			local textLabel = Instance.new("TextLabel")
+			textLabel.Size = UDim2.new(0.9, 0, 0.7, 0)
+			textLabel.Position = UDim2.new(0.05, 0, 0.05, 0)
+			textLabel.BackgroundTransparency = 1
+			textLabel.Text = memoText
+			textLabel.TextColor3 = Color3.new(0.1, 0.1, 0.1)
+			textLabel.TextScaled = true
+			textLabel.Font = Enum.Font.Kalam -- 手書き風フォント
+			textLabel.Parent = paperBg
+
+			-- 閉じるボタン（一人称視点でもマウスが出るように Modal = true にする）
+			local closeBtn = Instance.new("TextButton")
+			closeBtn.AnchorPoint = Vector2.new(0.5, 1)
+			closeBtn.Position = UDim2.new(0.5, 0, 0.95, 0)
+			closeBtn.Size = UDim2.new(0.4, 0, 0.15, 0)
+			closeBtn.Text = "閉じる"
+			closeBtn.Font = Enum.Font.GothamBold
+			closeBtn.TextScaled = true
+			closeBtn.Modal = true -- ★重要: これでマウスが表示されてクリック可能になる
+			closeBtn.Parent = paperBg
+
+			closeBtn.MouseButton1Click:Connect(function()
+				sg:Destroy()
+			end)
+		end)
 	end
+
+	-- ==========================================
 
 	local directions = { "Left", "Right", "Back" }
 	local chosenDirection = directions[math.random(1, #directions)]
