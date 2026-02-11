@@ -3,12 +3,14 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local StarterGui = game:GetService("StarterGui")
+local TweenService = game:GetService("TweenService") -- ★ 追加: アニメーション用
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 local requestStartEvent = ReplicatedStorage:WaitForChild("RequestStartGame")
 local jumpscareEvent = ReplicatedStorage:WaitForChild("OnJumpscare")
+local gameClearEvent = ReplicatedStorage:WaitForChild("OnGameClear")
 
 local oldGui = playerGui:FindFirstChild("GameUI")
 if oldGui then
@@ -19,6 +21,7 @@ local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "GameUI"
 screenGui.IgnoreGuiInset = true
 screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 100 -- ★ 追加: 「Floor: 09」などより確実に前に出すため
 screenGui.Parent = playerGui
 
 -----------------------------------------
@@ -42,16 +45,13 @@ titleLabel.Text = "Re: Trace"
 titleLabel.Font = Enum.Font.Creepster
 titleLabel.TextColor3 = Color3.new(0.8, 0, 0)
 titleLabel.TextScaled = true
--- ★ 1pxバグを回避するためONに
 titleLabel.TextWrapped = true
 titleLabel.AnchorPoint = Vector2.new(0.5, 0.5)
--- ★ 枠自体を画面幅100%、高さ40%に広げる
 titleLabel.Size = UDim2.new(1, 0, 0.4, 0)
 titleLabel.Position = UDim2.new(0.5, 0, 0.35, 0)
 titleLabel.BackgroundTransparency = 1
 titleLabel.Parent = titleFrame
 
--- ★ デフォルトの100px上限を解除！
 local titleConstraint = Instance.new("UITextSizeConstraint")
 titleConstraint.MaxTextSize = 400
 titleConstraint.Parent = titleLabel
@@ -94,7 +94,6 @@ gameOverLabel.Text = "GAME OVER"
 gameOverLabel.Font = Enum.Font.Creepster
 gameOverLabel.TextColor3 = Color3.new(1, 0, 0)
 gameOverLabel.TextScaled = true
--- ★ こちらも同様に設定
 gameOverLabel.TextWrapped = true
 gameOverLabel.AnchorPoint = Vector2.new(0.5, 0.5)
 gameOverLabel.Size = UDim2.new(1, 0, 0.4, 0)
@@ -102,7 +101,6 @@ gameOverLabel.Position = UDim2.new(0.5, 0, 0.35, 0)
 gameOverLabel.BackgroundTransparency = 1
 gameOverLabel.Parent = gameOverFrame
 
--- ★ 上限解除
 local gameOverConstraint = Instance.new("UITextSizeConstraint")
 gameOverConstraint.MaxTextSize = 400
 gameOverConstraint.Parent = gameOverLabel
@@ -122,6 +120,60 @@ local returnStroke = Instance.new("UIStroke")
 returnStroke.Color = Color3.new(0.5, 0, 0)
 returnStroke.Thickness = 2
 returnStroke.Parent = returnButton
+
+-----------------------------------------
+-- ゲームクリア（脱出成功）画面の作成
+-----------------------------------------
+local gameClearFrame = Instance.new("Frame")
+gameClearFrame.Size = UDim2.new(1, 0, 1, 0)
+gameClearFrame.BackgroundColor3 = Color3.new(1, 1, 1)
+gameClearFrame.BackgroundTransparency = 1 -- ★ 最初は透明
+gameClearFrame.Visible = false
+gameClearFrame.Parent = screenGui
+
+local gameClearModal = Instance.new("TextButton")
+gameClearModal.Size = UDim2.new(1, 0, 1, 0)
+gameClearModal.BackgroundTransparency = 1
+gameClearModal.Text = ""
+gameClearModal.Modal = true
+gameClearModal.ZIndex = 0
+gameClearModal.Parent = gameClearFrame
+
+local gameClearLabel = Instance.new("TextLabel")
+gameClearLabel.Text = "ESCAPED"
+gameClearLabel.Font = Enum.Font.GothamBold
+gameClearLabel.TextColor3 = Color3.new(0, 0, 0)
+gameClearLabel.TextScaled = true
+gameClearLabel.TextWrapped = true
+gameClearLabel.TextTransparency = 1 -- ★ 最初は透明
+gameClearLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+gameClearLabel.Size = UDim2.new(1, 0, 0.2, 0)
+gameClearLabel.Position = UDim2.new(0.5, 0, 0.35, 0)
+gameClearLabel.BackgroundTransparency = 1
+gameClearLabel.Parent = gameClearFrame
+
+local gameClearConstraint = Instance.new("UITextSizeConstraint")
+gameClearConstraint.MaxTextSize = 200
+gameClearConstraint.Parent = gameClearLabel
+
+local clearReturnButton = Instance.new("TextButton")
+clearReturnButton.Text = "タイトルへ戻る ␣"
+clearReturnButton.Font = Enum.Font.GothamBold
+clearReturnButton.TextColor3 = Color3.new(1, 1, 1)
+clearReturnButton.TextScaled = true
+clearReturnButton.TextTransparency = 1 -- ★ 最初は透明
+clearReturnButton.BackgroundTransparency = 1 -- ★ 最初は透明
+clearReturnButton.AnchorPoint = Vector2.new(0.5, 0.5)
+clearReturnButton.Size = UDim2.new(0.2, 0, 0.06, 0)
+clearReturnButton.Position = UDim2.new(0.5, 0, 0.7, 0)
+clearReturnButton.BackgroundColor3 = Color3.new(0.15, 0.15, 0.15)
+clearReturnButton.Parent = gameClearFrame
+
+local clearReturnStroke = Instance.new("UIStroke")
+clearReturnStroke.Color = Color3.new(0.5, 0.5, 0.5)
+clearReturnStroke.Thickness = 2
+clearReturnStroke.Transparency = 1 -- ★ 最初は透明
+clearReturnStroke.Parent = clearReturnButton
 
 -----------------------------------------
 -- ロジック
@@ -155,22 +207,29 @@ local function startGame()
 end
 
 local function returnToTitle()
-	if not gameOverFrame.Visible then
-		return
-	end
 	gameOverFrame.Visible = false
+	gameClearFrame.Visible = false
+
+	-- ★ 次のゲームクリアに備えて透明度をリセット
+	gameClearFrame.BackgroundTransparency = 1
+	gameClearLabel.TextTransparency = 1
+	clearReturnButton.BackgroundTransparency = 1
+	clearReturnButton.TextTransparency = 1
+	clearReturnStroke.Transparency = 1
+
 	titleFrame.Visible = true
 	hideInventory()
 end
 
 playButton.MouseButton1Click:Connect(startGame)
 returnButton.MouseButton1Click:Connect(returnToTitle)
+clearReturnButton.MouseButton1Click:Connect(returnToTitle)
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if input.KeyCode == Enum.KeyCode.Space then
 		if titleFrame.Visible then
 			startGame()
-		elseif gameOverFrame.Visible then
+		elseif gameOverFrame.Visible or gameClearFrame.Visible then
 			returnToTitle()
 		end
 	end
@@ -181,6 +240,30 @@ jumpscareEvent.OnClientEvent:Connect(function()
 	task.wait(2.5)
 	player.CameraMode = Enum.CameraMode.Classic
 	gameOverFrame.Visible = true
+end)
+
+-- ★ 変更: フェードインアニメーションの実装
+gameClearEvent.OnClientEvent:Connect(function()
+	hideInventory()
+	player.CameraMode = Enum.CameraMode.Classic
+	gameClearFrame.Visible = true
+
+	-- 2秒かけて画面全体を真っ白にする
+	local bgTween = TweenService:Create(
+		gameClearFrame,
+		TweenInfo.new(2.0, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+		{ BackgroundTransparency = 0 }
+	)
+	bgTween:Play()
+
+	bgTween.Completed:Wait() -- 真っ白になるまで待つ
+
+	-- その後、1秒かけて文字とボタンを浮かび上がらせる
+	local textTweenInfo = TweenInfo.new(1.0, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+	TweenService:Create(gameClearLabel, textTweenInfo, { TextTransparency = 0 }):Play()
+	TweenService:Create(clearReturnButton, textTweenInfo, { BackgroundTransparency = 0.15, TextTransparency = 0 })
+		:Play()
+	TweenService:Create(clearReturnStroke, textTweenInfo, { Transparency = 0 }):Play()
 end)
 
 player.CameraMode = Enum.CameraMode.Classic

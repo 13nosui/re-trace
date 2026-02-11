@@ -10,12 +10,12 @@ local GhostPlayback = require(ServerScriptService.Server.services.GhostPlayback)
 local Types = require(ReplicatedStorage.Shared.Types)
 
 local BADGE_IDS = {
-	SitOnChair = 0, -- 椅子に座った
-	NoJump = 0, -- ジャンプせずに部屋をクリアした
-	IgnoredKnife = 0, -- ナイフを取らずにクリアした
+	SitOnChair = 0,
+	NoJump = 0,
+	IgnoredKnife = 0,
+	GameClear = 0,
 }
 
--- 設定・定数
 local ROOM_TEMPLATE = ServerStorage:WaitForChild("RoomTemplate")
 local GHOST_TEMPLATE = ReplicatedStorage:WaitForChild("Ghost")
 local FOLLOWER_A = ServerStorage:WaitForChild("Follower_A")
@@ -74,6 +74,13 @@ if not requestStartEvent then
 	requestStartEvent = Instance.new("RemoteEvent")
 	requestStartEvent.Name = "RequestStartGame"
 	requestStartEvent.Parent = ReplicatedStorage
+end
+
+local gameClearEvent = ReplicatedStorage:FindFirstChild("OnGameClear")
+if not gameClearEvent then
+	gameClearEvent = Instance.new("RemoteEvent")
+	gameClearEvent.Name = "OnGameClear"
+	gameClearEvent.Parent = ReplicatedStorage
 end
 
 math.randomseed(os.time())
@@ -203,7 +210,6 @@ local function createTamperedData(originalFrames: { Types.FrameData }, anomalyNa
 end
 
 local function spawnRoom(player: Player, isReset: boolean)
-	print("--- spawnRoom Start ---")
 	local state = playerStates[player]
 	if not state then
 		return
@@ -229,7 +235,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 	else
 		roomEvent = getRandomEvent()
 	end
-	print("DEBUG: Room Event -> " .. roomEvent)
 
 	state.CurrentRoomEvent = roomEvent
 	state.HasJumpedThisFloor = false
@@ -250,13 +255,20 @@ local function spawnRoom(player: Player, isReset: boolean)
 		if #validAnomalies > 0 then
 			local anomaly = validAnomalies[math.random(1, #validAnomalies)]
 			state.ActiveAnomaly = anomaly.Name
-			print("⚠️ ANOMALY TRIGGERED:", anomaly.Name)
-		else
-			print("✅ Normal Room (No valid anomalies)")
 		end
-	else
-		print("✅ Normal Room")
 	end
+
+	print("\n========================================")
+	print("🏢 [Floor: " .. string.format("%02d", state.Level) .. "]")
+	print("🎭 Event  : " .. state.CurrentRoomEvent)
+	if state.ActiveAnomaly then
+		print("⚠️ Anomaly: YES (" .. state.ActiveAnomaly .. ")")
+		print("👉 正解ルート: 後ろの扉 (Entrance) に引き返す")
+	else
+		print("✅ Anomaly: NO (正常な部屋)")
+		print("👉 正解ルート: 奥の扉 (Exit) に進む")
+	end
+	print("========================================\n")
 
 	local newRoom = ROOM_TEMPLATE:Clone()
 	newRoom.Name = "Room_" .. player.Name
@@ -273,9 +285,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 		defaultVictim:Destroy()
 	end
 
-	-- ==========================================
-	-- ★ 既存のChairに対する座る判定（毎部屋必ずセット）
-	-- ==========================================
 	local chairModel = newRoom:FindFirstChild("Chair", true)
 	local seatPart = nil
 
@@ -285,7 +294,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 		seatPart = chairModel:FindFirstChildWhichIsA("Seat", true)
 	end
 
-	-- もし「Chair」という名前で見つからなくても、部屋の中にあるSeatを探す
 	if not seatPart then
 		seatPart = newRoom:FindFirstChildWhichIsA("Seat", true)
 	end
@@ -298,7 +306,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 			end
 		end)
 	end
-	-- ==========================================
 
 	if roomEvent == "Victim" then
 		local victimModel = FOLLOWER_A:Clone()
@@ -545,8 +552,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 			bindWeapon()
 		end
 	end
-
-	-- ==========================================
 
 	local directions = { "Left", "Right", "Back" }
 	local chosenDirection = directions[math.random(1, #directions)]
@@ -840,7 +845,6 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 	end
 
 	if isCorrect then
-		-- ★ バッジ判定
 		if not state.HasJumpedThisFloor then
 			awardBadge(player, BADGE_IDS.NoJump, "地に足をつけて（ジャンプせずにクリア）")
 		end
@@ -854,6 +858,33 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 		end
 
 		state.Level += 1
+
+		-- ==========================================
+		-- ★ 修正箇所：クリア時にプレイヤーを「完全無敵状態」にする
+		-- ==========================================
+		if state.Level >= 10 then
+			awardBadge(player, BADGE_IDS.GameClear, "ループからの脱出（ゲームクリア）")
+
+			if player.Character then
+				local root = player.Character:FindFirstChild("HumanoidRootPart")
+				if root then
+					root.Anchored = true
+					root.AssemblyLinearVelocity = Vector3.zero
+				end
+
+				-- ★ ここで無敵バリアを張り、キラーからのダメージを強制的に無効化
+				local forceField = Instance.new("ForceField")
+				forceField.Visible = false -- バリア自体は見えないようにする
+				forceField.Parent = player.Character
+			end
+
+			if gameClearEvent then
+				gameClearEvent:FireClient(player)
+			end
+
+			return
+		end
+
 		state.LastGhostData = currentRecording
 		spawnRoom(player, false)
 	else
