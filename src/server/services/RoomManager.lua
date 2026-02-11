@@ -16,7 +16,6 @@ local FOLLOWER_B = ServerStorage:WaitForChild("Follower_B")
 
 local ANOMALY_CHANCE = 0.6
 
--- ★ カタログに KillerRoom を追加
 local EVENT_CATALOG = {
 	{ Name = "None", Weight = 30 },
 	{ Name = "Follower", Weight = 20 },
@@ -24,7 +23,7 @@ local EVENT_CATALOG = {
 	{ Name = "KnifeRoom", Weight = 15 },
 	{ Name = "BloodText", Weight = 10 },
 	{ Name = "MemoRoom", Weight = 10 },
-	{ Name = "KillerRoom", Weight = 15 }, -- ★ 追加: 襲いかかってくる部屋
+	{ Name = "KillerRoom", Weight = 15 },
 }
 
 local ANOMALY_CATALOG = {
@@ -248,9 +247,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 		defaultVictim:Destroy()
 	end
 
-	-- ==========================================
-	-- ★ イベントの配置
-	-- ==========================================
 	if roomEvent == "Victim" then
 		local victimModel = FOLLOWER_A:Clone()
 		if victimModel then
@@ -413,35 +409,29 @@ local function spawnRoom(player: Player, isReset: boolean)
 				sg:Destroy()
 			end)
 		end)
-
-	-- ★ 追加: キラー（殺人鬼）が襲ってくる部屋
 	elseif roomEvent == "KillerRoom" then
 		local roomPos = newRoom:GetPivot().Position
 		local killer = FOLLOWER_B:Clone()
 		killer.Name = "Killer"
 		killer.Parent = newRoom
 
-		-- 奥の方に配置
 		killer:PivotTo(CFrame.new(roomPos.X, floorY + 3, roomPos.Z + 15))
 
 		local hum = killer:WaitForChild("Humanoid")
 		local root = killer:WaitForChild("HumanoidRootPart")
-		hum.WalkSpeed = 15 -- プレイヤーより少しだけ遅い（逃げ切れる速度）
+		hum.WalkSpeed = 15
 
-		-- 既存のAIを消す
 		local ai = killer:FindFirstChild("FollowerAI")
 		if ai then
 			ai:Destroy()
 		end
 
-		-- キラーにナイフを持たせる
 		local toolsFolder = ReplicatedStorage:FindFirstChild("Tools")
 		if toolsFolder and toolsFolder:FindFirstChild("Knife") then
 			local kKnife = toolsFolder.Knife:Clone()
 			kKnife.Parent = killer
 		end
 
-		-- 【キラーの攻撃AI】プレイヤーを追いかけて、追いついたらダメージ
 		task.spawn(function()
 			while killer.Parent and hum.Health > 0 do
 				if
@@ -456,9 +446,8 @@ local function spawnRoom(player: Player, isReset: boolean)
 						hum:MoveTo(pRoot.Position)
 						local dist = (pRoot.Position - root.Position).Magnitude
 						if dist < 4 then
-							-- プレイヤーにダメージを与える
 							pHum:TakeDamage(15)
-							task.wait(1) -- 連続ダメージを防ぐクールダウン
+							task.wait(1)
 						end
 					end
 				end
@@ -466,7 +455,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 			end
 		end)
 
-		-- 【プレイヤーの反撃処理】ナイフを振った時に近くにキラーがいれば倒せる
 		if character then
 			local toolConn
 			local function bindWeapon()
@@ -479,9 +467,8 @@ local function spawnRoom(player: Player, isReset: boolean)
 						if hum.Health > 0 and character:FindFirstChild("HumanoidRootPart") then
 							local pRoot = character.HumanoidRootPart
 							local dist = (pRoot.Position - root.Position).Magnitude
-							if dist < 6.5 then -- プレイヤーの攻撃範囲（キラーより少し長い）
-								hum.Health = 0 -- 一撃で倒す
-								-- 倒した時のちょっとした演出
+							if dist < 6.5 then
+								hum.Health = 0
 								local blood = Instance.new("ParticleEmitter")
 								blood.Color = ColorSequence.new(Color3.fromRGB(150, 0, 0))
 								blood.Size = NumberSequence.new(1)
@@ -489,19 +476,24 @@ local function spawnRoom(player: Player, isReset: boolean)
 								blood:Emit(30)
 
 								print("⚔️ プレイヤーがキラーを撃退しました！")
+
+								-- ★ 追加: ナイフを破壊する処理
+								if tool then
+									tool:Destroy()
+									print("🔪 ナイフが壊れた！")
+								end
 							end
 						end
 					end)
 				end
 			end
 
-			-- プレイヤーがナイフを「装備した時」にイベントを監視する
 			character.ChildAdded:Connect(function(child)
 				if child.Name == "Knife" then
 					bindWeapon()
 				end
 			end)
-			bindWeapon() -- 既に持っている場合のため
+			bindWeapon()
 		end
 	end
 
