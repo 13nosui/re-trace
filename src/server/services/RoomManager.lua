@@ -3,10 +3,17 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local PhysicsService = game:GetService("PhysicsService")
+local BadgeService = game:GetService("BadgeService")
 
 local GhostRecorder = require(ServerScriptService.Server.services.GhostRecorder)
 local GhostPlayback = require(ServerScriptService.Server.services.GhostPlayback)
 local Types = require(ReplicatedStorage.Shared.Types)
+
+local BADGE_IDS = {
+	SitOnChair = 0, -- 椅子に座った
+	NoJump = 0, -- ジャンプせずに部屋をクリアした
+	IgnoredKnife = 0, -- ナイフを取らずにクリアした
+}
 
 -- 設定・定数
 local ROOM_TEMPLATE = ServerStorage:WaitForChild("RoomTemplate")
@@ -79,9 +86,26 @@ type PlayerState = {
 	LastGhostData: { Types.FrameData }?,
 	ActiveAnomaly: string?,
 	AbandonedNPC: string?,
+	CurrentRoomEvent: string?,
+	HasJumpedThisFloor: boolean,
 }
 
 local playerStates: { [Player]: PlayerState } = {}
+
+local function awardBadge(player: Player, badgeId: number, badgeName: string)
+	if badgeId == 0 then
+		print("🏆 [テスト環境] バッジ獲得条件達成: " .. badgeName)
+		return
+	end
+	task.spawn(function()
+		pcall(function()
+			if not BadgeService:UserHasBadgeAsync(player.UserId, badgeId) then
+				BadgeService:AwardBadge(player.UserId, badgeId)
+				print("🏆 本番バッジ獲得: " .. badgeName)
+			end
+		end)
+	end)
+end
 
 local function getRandomEvent()
 	local totalWeight = 0
@@ -175,7 +199,6 @@ local function createTamperedData(originalFrames: { Types.FrameData }, anomalyNa
 		end
 		return reversed
 	end
-
 	return newFrames
 end
 
@@ -207,6 +230,9 @@ local function spawnRoom(player: Player, isReset: boolean)
 		roomEvent = getRandomEvent()
 	end
 	print("DEBUG: Room Event -> " .. roomEvent)
+
+	state.CurrentRoomEvent = roomEvent
+	state.HasJumpedThisFloor = false
 
 	state.ActiveAnomaly = nil
 	if not isReset and state.Level > 1 and math.random() < ANOMALY_CHANCE then
@@ -246,6 +272,33 @@ local function spawnRoom(player: Player, isReset: boolean)
 	if defaultVictim then
 		defaultVictim:Destroy()
 	end
+
+	-- ==========================================
+	-- ★ 既存のChairに対する座る判定（毎部屋必ずセット）
+	-- ==========================================
+	local chairModel = newRoom:FindFirstChild("Chair", true)
+	local seatPart = nil
+
+	if chairModel and chairModel:IsA("Seat") then
+		seatPart = chairModel
+	elseif chairModel then
+		seatPart = chairModel:FindFirstChildWhichIsA("Seat", true)
+	end
+
+	-- もし「Chair」という名前で見つからなくても、部屋の中にあるSeatを探す
+	if not seatPart then
+		seatPart = newRoom:FindFirstChildWhichIsA("Seat", true)
+	end
+
+	if seatPart then
+		seatPart:GetPropertyChangedSignal("Occupant"):Connect(function()
+			local occupant = seatPart.Occupant
+			if occupant and occupant.Parent == character then
+				awardBadge(player, BADGE_IDS.SitOnChair, "一時の休息（椅子に座る）")
+			end
+		end)
+	end
+	-- ==========================================
 
 	if roomEvent == "Victim" then
 		local victimModel = FOLLOWER_A:Clone()
@@ -475,12 +528,8 @@ local function spawnRoom(player: Player, isReset: boolean)
 								blood.Parent = root
 								blood:Emit(30)
 
-								print("⚔️ プレイヤーがキラーを撃退しました！")
-
-								-- ★ 追加: ナイフを破壊する処理
 								if tool then
 									tool:Destroy()
-									print("🔪 ナイフが壊れた！")
 								end
 							end
 						end
@@ -652,6 +701,15 @@ local function spawnRoom(player: Player, isReset: boolean)
 			root.AssemblyLinearVelocity = Vector3.zero
 			root.AssemblyAngularVelocity = Vector3.zero
 		end
+
+		local hum = character:FindFirstChild("Humanoid")
+		if hum then
+			hum.Jumping:Connect(function(active)
+				if active then
+					state.HasJumpedThisFloor = true
+				end
+			end)
+		end
 	end
 
 	if state.LastGhostData then
@@ -730,8 +788,15 @@ function RoomManager.Init()
 	end)
 
 	game.Players.PlayerAdded:Connect(function(player)
-		playerStates[player] =
-			{ CurrentRoom = nil, Level = 1, LastGhostData = nil, ActiveAnomaly = nil, AbandonedNPC = nil }
+		playerStates[player] = {
+			CurrentRoom = nil,
+			Level = 1,
+			LastGhostData = nil,
+			ActiveAnomaly = nil,
+			AbandonedNPC = nil,
+			CurrentRoomEvent = "None",
+			HasJumpedThisFloor = false,
+		}
 		player.CharacterAdded:Connect(function(character)
 			local root = character:WaitForChild("HumanoidRootPart", 5)
 			if root then
@@ -775,6 +840,19 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 	end
 
 	if isCorrect then
+		-- ★ バッジ判定
+		if not state.HasJumpedThisFloor then
+			awardBadge(player, BADGE_IDS.NoJump, "地に足をつけて（ジャンプせずにクリア）")
+		end
+
+		if state.CurrentRoomEvent == "KnifeRoom" then
+			local hasKnife = player.Backpack:FindFirstChild("Knife")
+				or (player.Character and player.Character:FindFirstChild("Knife"))
+			if not hasKnife then
+				awardBadge(player, BADGE_IDS.IgnoredKnife, "非暴力の誓い（ナイフを無視してクリア）")
+			end
+		end
+
 		state.Level += 1
 		state.LastGhostData = currentRecording
 		spawnRoom(player, false)
