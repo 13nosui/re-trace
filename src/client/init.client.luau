@@ -5,5 +5,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 -- 今回は個別にrequireします
 local FloorHUD = require(script.controllers.FloorHUD)
 local JumpscareController = require(script.controllers.JumpscareController)
+local GameUIController = require(script.controllers.GameUIController)
 
 print("✅ Client initialized")
