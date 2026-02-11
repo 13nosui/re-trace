@@ -16,6 +16,13 @@ local FOLLOWER_B = ServerStorage:WaitForChild("Follower_B")
 
 local ANOMALY_CHANCE = 0.6
 
+-- ★ 追加: 部屋のイベントカタログ（Weightの数字が大きいほど出やすい）
+local EVENT_CATALOG = {
+	{ Name = "None", Weight = 60 }, -- 誰もいない部屋
+	{ Name = "Follower", Weight = 10 }, -- 選択を迫られる部屋
+	{ Name = "Victim", Weight = 10 }, -- 生贄がいる部屋
+}
+
 local ANOMALY_CATALOG = {
 	{ Name = "GhostAttack" },
 	{ Name = "GhostStop" },
@@ -38,7 +45,6 @@ task.spawn(function()
 	end)
 end)
 
--- 通信用イベント群
 local remoteEvent = ReplicatedStorage:FindFirstChild("OnFloorChanged")
 if not remoteEvent then
 	remoteEvent = Instance.new("RemoteEvent")
@@ -53,7 +59,6 @@ if not jumpscareEvent then
 	jumpscareEvent.Parent = ReplicatedStorage
 end
 
--- ★新規追加: ゲーム開始リクエスト用イベント
 local requestStartEvent = ReplicatedStorage:FindFirstChild("RequestStartGame")
 if not requestStartEvent then
 	requestStartEvent = Instance.new("RemoteEvent")
@@ -75,7 +80,26 @@ type PlayerState = {
 
 local playerStates: { [Player]: PlayerState } = {}
 
--- (データ改ざん関数は変更なし)
+-- ★ 追加: イベントの重み付き抽選関数
+local function getRandomEvent()
+	local totalWeight = 0
+	for _, event in ipairs(EVENT_CATALOG) do
+		totalWeight += event.Weight
+	end
+
+	local randomValue = math.random() * totalWeight
+	local currentWeight = 0
+
+	for _, event in ipairs(EVENT_CATALOG) do
+		currentWeight += event.Weight
+		if randomValue <= currentWeight then
+			return event.Name
+		end
+	end
+	return "None" -- フォールバック
+end
+
+-- データ改ざん関数
 local function createTamperedData(originalFrames: { Types.FrameData }, anomalyName: string): { Types.FrameData }
 	local newFrames = {}
 	for _, frame in ipairs(originalFrames) do
@@ -168,11 +192,47 @@ local function spawnRoom(player: Player, isReset: boolean)
 		state.CurrentRoom:Destroy()
 	end
 
+	local currentFollowerName = nil
+	local character = player.Character
+	if character then
+		currentFollowerName = character:GetAttribute("FollowerName")
+		print("DEBUG: Current Follower is " .. tostring(currentFollowerName))
+		character:SetAttribute("FollowerName", nil)
+		character:SetAttribute("HasFollower", nil)
+	end
+
+	-- ★ 変更: 新しい抽選関数を使用
+	local roomEvent = "None"
+	if state.Level == 1 then
+		roomEvent = "None"
+	elseif currentFollowerName then
+		roomEvent = "Follower"
+	else
+		-- 誰も連れていない状態なら、カタログに基づいて重み付き抽選
+		roomEvent = getRandomEvent()
+	end
+	print("DEBUG: Room Event -> " .. roomEvent)
+
 	state.ActiveAnomaly = nil
 	if not isReset and state.Level > 1 and math.random() < ANOMALY_CHANCE then
-		local anomaly = ANOMALY_CATALOG[math.random(1, #ANOMALY_CATALOG)]
-		state.ActiveAnomaly = anomaly.Name
-		print("⚠️ ANOMALY TRIGGERED:", anomaly.Name)
+		local validAnomalies = {}
+		for _, anomaly in ipairs(ANOMALY_CATALOG) do
+			if anomaly.Name == "GhostAttack" then
+				if roomEvent == "Victim" then
+					table.insert(validAnomalies, anomaly)
+				end
+			else
+				table.insert(validAnomalies, anomaly)
+			end
+		end
+
+		if #validAnomalies > 0 then
+			local anomaly = validAnomalies[math.random(1, #validAnomalies)]
+			state.ActiveAnomaly = anomaly.Name
+			print("⚠️ ANOMALY TRIGGERED:", anomaly.Name)
+		else
+			print("✅ Normal Room (No valid anomalies)")
+		end
 	else
 		print("✅ Normal Room")
 	end
@@ -187,29 +247,23 @@ local function spawnRoom(player: Player, isReset: boolean)
 	local floorY = floor and (floor.Position.Y + (floor.Size.Y / 2)) or newRoom:GetPivot().Position.Y
 	local entrance = newRoom:WaitForChild("Entrance") :: BasePart
 
-	local currentFollowerName = nil
-	local character = player.Character
-	if character then
-		currentFollowerName = character:GetAttribute("FollowerName")
-		character:SetAttribute("FollowerName", nil)
-		character:SetAttribute("HasFollower", nil)
-	end
-
 	local defaultVictim = newRoom:FindFirstChild("Victim")
 	if defaultVictim then
 		defaultVictim:Destroy()
 	end
 
-	local victimModel = FOLLOWER_A:Clone()
-	if victimModel then
-		victimModel.Name = "Victim"
-		victimModel.Parent = newRoom
-		victimModel:PivotTo(CFrame.new(newRoom:GetPivot().Position.X, floorY + 3, newRoom:GetPivot().Position.Z))
-		victimModel:WaitForChild("Humanoid").Health = 100
-		victimModel:WaitForChild("HumanoidRootPart").Anchored = false
-		local aiScript = victimModel:FindFirstChild("FollowerAI")
-		if aiScript then
-			aiScript:Destroy()
+	if roomEvent == "Victim" then
+		local victimModel = FOLLOWER_A:Clone()
+		if victimModel then
+			victimModel.Name = "Victim"
+			victimModel.Parent = newRoom
+			victimModel:PivotTo(CFrame.new(newRoom:GetPivot().Position.X, floorY + 3, newRoom:GetPivot().Position.Z))
+			victimModel:WaitForChild("Humanoid").Health = 100
+			victimModel:WaitForChild("HumanoidRootPart").Anchored = false
+			local aiScript = victimModel:FindFirstChild("FollowerAI")
+			if aiScript then
+				aiScript:Destroy()
+			end
 		end
 	end
 
@@ -237,131 +291,132 @@ local function spawnRoom(player: Player, isReset: boolean)
 		end
 	end
 
-	local roomPos = newRoom:GetPivot().Position
-	local exitBasePos = CFrame.new(0, floorY + 3, 0)
-	if activeExit then
-		local direction = Vector3.new(activeExit.Position.X - roomPos.X, 0, activeExit.Position.Z - roomPos.Z)
-		local basePos = roomPos + direction * 0.8
-		exitBasePos = CFrame.lookAt(
-			CFrame.new(basePos.X, floorY + 3, basePos.Z).Position,
-			Vector3.new(roomPos.X, floorY + 3, roomPos.Z)
+	if roomEvent == "Follower" then
+		local roomPos = newRoom:GetPivot().Position
+		local exitBasePos = CFrame.new(0, floorY + 3, 0)
+		if activeExit then
+			local direction = Vector3.new(activeExit.Position.X - roomPos.X, 0, activeExit.Position.Z - roomPos.Z)
+			local basePos = roomPos + direction * 0.8
+			exitBasePos = CFrame.lookAt(
+				CFrame.new(basePos.X, floorY + 3, basePos.Z).Position,
+				Vector3.new(roomPos.X, floorY + 3, roomPos.Z)
+			)
+		end
+
+		local entranceBasePos = CFrame.new(
+			(entrance.CFrame * CFrame.new(3, 0, 3)).Position.X,
+			floorY + 3,
+			(entrance.CFrame * CFrame.new(3, 0, 3)).Position.Z
 		)
-	end
+		local deadBodyBasePos = CFrame.new(roomPos.X + 3, floorY, roomPos.Z + 3)
 
-	local entranceBasePos = CFrame.new(
-		(entrance.CFrame * CFrame.new(3, 0, 3)).Position.X,
-		floorY + 3,
-		(entrance.CFrame * CFrame.new(3, 0, 3)).Position.Z
-	)
-	local deadBodyBasePos = CFrame.new(roomPos.X + 3, floorY, roomPos.Z + 3)
+		local function spawnNPC(template, name, positionCFrame, isDead, isPartner, isChoice)
+			local npc = template:Clone()
+			npc.Name = isDead and (name .. "_Corpse") or name
+			npc.Parent = newRoom
 
-	local function spawnNPC(template, name, positionCFrame, isDead, isPartner, isChoice)
-		local npc = template:Clone()
-		npc.Name = isDead and (name .. "_Corpse") or name
-		npc.Parent = newRoom
-
-		if isDead then
-			local hum = npc:FindFirstChild("Humanoid")
-			if hum then
-				hum:Destroy()
-			end
-			local ai = npc:FindFirstChild("FollowerAI")
-			if ai then
-				ai:Destroy()
-			end
-
-			for _, part in npc:GetDescendants() do
-				if part:IsA("BasePart") then
-					part.Color = Color3.fromRGB(100, 0, 0)
-					part.Material = Enum.Material.Slate
-					part.Transparency = 0
-					for _, child in part:GetChildren() do
-						if child:IsA("Decal") or child:IsA("Texture") then
-							child:Destroy()
-						end
-					end
-					for _, joint in part:GetChildren() do
-						if joint:IsA("Motor6D") or joint:IsA("Weld") then
-							joint:Destroy()
-						end
-					end
-
-					local offsetX, offsetZ = (math.random() - 0.5) * 6, (math.random() - 0.5) * 6
-					local randomRot = CFrame.Angles(math.random() * 6, math.random() * 6, math.random() * 6)
-
-					part.CFrame = CFrame.new(deadBodyBasePos.X + offsetX, floorY + 0.5, deadBodyBasePos.Z + offsetZ)
-						* randomRot
-					part.Anchored = true
-					part.CanCollide = false
+			if isDead then
+				local hum = npc:FindFirstChild("Humanoid")
+				if hum then
+					hum:Destroy()
 				end
-			end
-		elseif isPartner then
-			npc:PivotTo(positionCFrame)
-			local ai = npc:FindFirstChild("FollowerAI")
-			if ai then
-				ai:Destroy()
-			end
-
-			local head = npc:FindFirstChild("Head") or npc.PrimaryPart
-			if head then
-				local bgui = Instance.new("BillboardGui")
-				bgui.Size = UDim2.new(0, 200, 0, 50)
-				bgui.StudsOffset = Vector3.new(0, 2.5, 0)
-				bgui.Adornee = head
-				bgui.Parent = npc
-
-				local text = Instance.new("TextLabel")
-				text.Size = UDim2.new(1, 0, 1, 0)
-				text.BackgroundTransparency = 1
-				text.Text = "ありがとう…\n私はここまでにします"
-				text.TextColor3 = Color3.new(1, 1, 1)
-				text.TextStrokeTransparency = 0.5
-				text.TextScaled = true
-				text.Font = Enum.Font.GothamBold
-				text.Parent = bgui
-			end
-
-			for _, part in npc:GetDescendants() do
-				if part:IsA("BasePart") then
-					part.CollisionGroup = "Default"
+				local ai = npc:FindFirstChild("FollowerAI")
+				if ai then
+					ai:Destroy()
 				end
-			end
-		elseif isChoice then
-			npc:PivotTo(positionCFrame)
-			local prompt = Instance.new("ProximityPrompt")
-			prompt.Name = "SelectPrompt"
-			prompt.ActionText = "連れて行く"
-			prompt.ObjectText = name
-			prompt.HoldDuration = 0.5
-			prompt.MaxActivationDistance = 15
-			prompt.Parent = npc
 
-			for _, part in npc:GetDescendants() do
-				if part:IsA("BasePart") then
-					part.CollisionGroup = "Default"
+				for _, part in npc:GetDescendants() do
+					if part:IsA("BasePart") then
+						part.Color = Color3.fromRGB(100, 0, 0)
+						part.Material = Enum.Material.Slate
+						part.Transparency = 0
+						for _, child in part:GetChildren() do
+							if child:IsA("Decal") or child:IsA("Texture") then
+								child:Destroy()
+							end
+						end
+						for _, joint in part:GetChildren() do
+							if joint:IsA("Motor6D") or joint:IsA("Weld") then
+								joint:Destroy()
+							end
+						end
+
+						local offsetX, offsetZ = (math.random() - 0.5) * 6, (math.random() - 0.5) * 6
+						local randomRot = CFrame.Angles(math.random() * 6, math.random() * 6, math.random() * 6)
+
+						part.CFrame = CFrame.new(deadBodyBasePos.X + offsetX, floorY + 0.5, deadBodyBasePos.Z + offsetZ)
+							* randomRot
+						part.Anchored = true
+						part.CanCollide = false
+					end
+				end
+			elseif isPartner then
+				npc:PivotTo(positionCFrame)
+				local ai = npc:FindFirstChild("FollowerAI")
+				if ai then
+					ai:Destroy()
+				end
+
+				local head = npc:FindFirstChild("Head") or npc.PrimaryPart
+				if head then
+					local bgui = Instance.new("BillboardGui")
+					bgui.Size = UDim2.new(0, 200, 0, 50)
+					bgui.StudsOffset = Vector3.new(0, 2.5, 0)
+					bgui.Adornee = head
+					bgui.Parent = npc
+
+					local text = Instance.new("TextLabel")
+					text.Size = UDim2.new(1, 0, 1, 0)
+					text.BackgroundTransparency = 1
+					text.Text = "ありがとう…\n私はここまでにします"
+					text.TextColor3 = Color3.new(1, 1, 1)
+					text.TextStrokeTransparency = 0.5
+					text.TextScaled = true
+					text.Font = Enum.Font.GothamBold
+					text.Parent = bgui
+				end
+
+				for _, part in npc:GetDescendants() do
+					if part:IsA("BasePart") then
+						part.CollisionGroup = "Default"
+					end
+				end
+			elseif isChoice then
+				npc:PivotTo(positionCFrame)
+				local prompt = Instance.new("ProximityPrompt")
+				prompt.Name = "SelectPrompt"
+				prompt.ActionText = "連れて行く"
+				prompt.ObjectText = name
+				prompt.HoldDuration = 0.5
+				prompt.MaxActivationDistance = 15
+				prompt.Parent = npc
+
+				for _, part in npc:GetDescendants() do
+					if part:IsA("BasePart") then
+						part.CollisionGroup = "Default"
+					end
 				end
 			end
 		end
+
+		if currentFollowerName == "Follower_A" then
+			spawnNPC(FOLLOWER_A, "Follower_A", entranceBasePos, false, true, false)
+			spawnNPC(FOLLOWER_B, "Follower_B", deadBodyBasePos, true, false, false)
+		elseif currentFollowerName == "Follower_B" then
+			spawnNPC(FOLLOWER_B, "Follower_B", entranceBasePos, false, true, false)
+			spawnNPC(FOLLOWER_A, "Follower_A", deadBodyBasePos, true, false, false)
+		else
+			spawnNPC(FOLLOWER_A, "Follower_A", exitBasePos * CFrame.new(-6, 0, 0), false, false, true)
+			spawnNPC(FOLLOWER_B, "Follower_B", exitBasePos * CFrame.new(6, 0, 0), false, false, true)
+		end
 	end
 
-	if currentFollowerName == "Follower_A" then
-		spawnNPC(FOLLOWER_A, "Follower_A", entranceBasePos, false, true, false)
-		spawnNPC(FOLLOWER_B, "Follower_B", deadBodyBasePos, true, false, false)
-	elseif currentFollowerName == "Follower_B" then
-		spawnNPC(FOLLOWER_B, "Follower_B", entranceBasePos, false, true, false)
-		spawnNPC(FOLLOWER_A, "Follower_A", deadBodyBasePos, true, false, false)
-	else
-		spawnNPC(FOLLOWER_A, "Follower_A", exitBasePos * CFrame.new(-6, 0, 0), false, false, true)
-		spawnNPC(FOLLOWER_B, "Follower_B", exitBasePos * CFrame.new(6, 0, 0), false, false, true)
-	end
-
-	-- プレイヤー移動（UIが消えるのと同時に動けるように、拘束を解く）
 	local spawnCFrame = entrance.CFrame * CFrame.new(0, 0, 10)
 	if character then
 		character:PivotTo(spawnCFrame + Vector3.new(0, 2, 0))
 		local root = character:FindFirstChild("HumanoidRootPart")
 		if root then
-			root.Anchored = false -- ★ここで動けるようになる
+			root.Anchored = false
 			root.AssemblyLinearVelocity = Vector3.zero
 			root.AssemblyAngularVelocity = Vector3.zero
 		end
@@ -429,7 +484,6 @@ local function spawnRoom(player: Player, isReset: boolean)
 end
 
 function RoomManager.Init()
-	-- ★UIから「ゲーム開始」ボタンが押された時の処理
 	requestStartEvent.OnServerEvent:Connect(function(player)
 		local state = playerStates[player]
 		if state then
@@ -439,19 +493,17 @@ function RoomManager.Init()
 			if player.Character then
 				player.Character:SetAttribute("FollowerName", nil)
 			end
-			spawnRoom(player, true) -- ここで初めて部屋が作られる
+			spawnRoom(player, true)
 		end
 	end)
 
 	game.Players.PlayerAdded:Connect(function(player)
 		playerStates[player] =
 			{ CurrentRoom = nil, Level = 1, LastGhostData = nil, ActiveAnomaly = nil, AbandonedNPC = nil }
-
-		-- ★ログイン直後は部屋を作らず、プレイヤーを空中に固定してタイトル画面を待たせる
 		player.CharacterAdded:Connect(function(character)
 			local root = character:WaitForChild("HumanoidRootPart", 5)
 			if root then
-				root.Anchored = true -- 動けないように固定
+				root.Anchored = true
 			end
 		end)
 	end)
@@ -499,19 +551,14 @@ function RoomManager.CheckAnswer(player: Player, doorType: string)
 			if jumpscareEvent then
 				jumpscareEvent:FireClient(player)
 			end
-
-			-- ★死亡時は部屋を消し、プレイヤーを固定してゲームオーバーUIを待つ
 			if state.CurrentRoom then
 				state.CurrentRoom:Destroy()
 			end
 			state.CurrentRoom = nil
-
 			if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
 				player.Character.HumanoidRootPart.Anchored = true
 			end
-			-- ここでは spawnRoom は呼ばない（UIの「タイトルへ戻る」→「開始」を待つ）
 		else
-			-- ただの間違い（異変なしで引き返した）の場合は即リセット
 			state.Level = 1
 			state.LastGhostData = nil
 			state.AbandonedNPC = nil
