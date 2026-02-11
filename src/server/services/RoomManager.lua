@@ -16,11 +16,12 @@ local FOLLOWER_B = ServerStorage:WaitForChild("Follower_B")
 
 local ANOMALY_CHANCE = 0.6
 
--- ★ 追加: 部屋のイベントカタログ（Weightの数字が大きいほど出やすい）
+-- ★ 追加: イベントカタログに「KnifeRoom」を追加
 local EVENT_CATALOG = {
-	{ Name = "None", Weight = 60 }, -- 誰もいない部屋
-	{ Name = "Follower", Weight = 10 }, -- 選択を迫られる部屋
-	{ Name = "Victim", Weight = 10 }, -- 生贄がいる部屋
+	{ Name = "None", Weight = 30 }, -- 誰もいない部屋
+	{ Name = "Follower", Weight = 30 }, -- 選択を迫られる部屋
+	{ Name = "Victim", Weight = 20 }, -- 生贄がいる部屋
+	{ Name = "KnifeRoom", Weight = 20 }, -- ★ 追加: ナイフが落ちている部屋
 }
 
 local ANOMALY_CATALOG = {
@@ -80,7 +81,6 @@ type PlayerState = {
 
 local playerStates: { [Player]: PlayerState } = {}
 
--- ★ 追加: イベントの重み付き抽選関数
 local function getRandomEvent()
 	local totalWeight = 0
 	for _, event in ipairs(EVENT_CATALOG) do
@@ -96,7 +96,7 @@ local function getRandomEvent()
 			return event.Name
 		end
 	end
-	return "None" -- フォールバック
+	return "None"
 end
 
 -- データ改ざん関数
@@ -201,14 +201,12 @@ local function spawnRoom(player: Player, isReset: boolean)
 		character:SetAttribute("HasFollower", nil)
 	end
 
-	-- ★ 変更: 新しい抽選関数を使用
 	local roomEvent = "None"
 	if state.Level == 1 then
 		roomEvent = "None"
 	elseif currentFollowerName then
 		roomEvent = "Follower"
 	else
-		-- 誰も連れていない状態なら、カタログに基づいて重み付き抽選
 		roomEvent = getRandomEvent()
 	end
 	print("DEBUG: Room Event -> " .. roomEvent)
@@ -252,6 +250,7 @@ local function spawnRoom(player: Player, isReset: boolean)
 		defaultVictim:Destroy()
 	end
 
+	-- ★ 5. イベントの配置
 	if roomEvent == "Victim" then
 		local victimModel = FOLLOWER_A:Clone()
 		if victimModel then
@@ -265,6 +264,58 @@ local function spawnRoom(player: Player, isReset: boolean)
 				aiScript:Destroy()
 			end
 		end
+
+	-- ★ 追加: ナイフの配置処理
+	elseif roomEvent == "KnifeRoom" then
+		local roomPos = newRoom:GetPivot().Position
+
+		-- ダミーのナイフモデルを作成（銀色のパーツ）
+		local knifePart = Instance.new("Part")
+		knifePart.Name = "DroppedKnife"
+		knifePart.Size = Vector3.new(0.5, 0.2, 1.5)
+		knifePart.Color = Color3.fromRGB(180, 180, 180) -- 銀色
+		knifePart.Material = Enum.Material.Metal
+		-- 床に少し寝かせて配置
+		knifePart.CFrame = CFrame.new(roomPos.X, floorY + 0.1, roomPos.Z)
+			* CFrame.Angles(0, math.random() * math.pi, math.pi / 2)
+		knifePart.Anchored = true
+		knifePart.CanCollide = false
+		knifePart.Parent = newRoom
+
+		-- Eキー（タップ）で拾えるプロンプト
+		local prompt = Instance.new("ProximityPrompt")
+		prompt.Name = "PickupPrompt"
+		prompt.ActionText = "拾う"
+		prompt.ObjectText = "ナイフ"
+		prompt.HoldDuration = 0.5
+		prompt.MaxActivationDistance = 10
+		prompt.Parent = knifePart
+
+		prompt.Triggered:Connect(function(triggerPlayer)
+			local char = triggerPlayer.Character
+			if not char then
+				return
+			end
+
+			-- 既に持っているか確認
+			if triggerPlayer.Backpack:FindFirstChild("Knife") or char:FindFirstChild("Knife") then
+				prompt:Destroy() -- 持っていたらプロンプトだけ消す
+				return
+			end
+
+			-- ReplicatedStorage.Tools から本物のKnifeをコピーして渡す
+			local toolsFolder = ReplicatedStorage:FindFirstChild("Tools")
+			if toolsFolder then
+				local sourceKnife = toolsFolder:FindFirstChild("Knife")
+				if sourceKnife then
+					local newKnife = sourceKnife:Clone()
+					newKnife.Parent = triggerPlayer.Backpack
+					knifePart:Destroy() -- 拾ったら床から消える
+				end
+			else
+				warn("⚠️ ReplicatedStorage に Tools フォルダが見つかりません！")
+			end
+		end)
 	end
 
 	local directions = { "Left", "Right", "Back" }
