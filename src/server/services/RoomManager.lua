@@ -271,9 +271,57 @@ local function spawnRoom(player: Player, isReset: boolean)
 	print("========================================\n")
 
 	local newRoom = ROOM_TEMPLATE:Clone()
+	local function setupEnvironmentalStorytelling(newRoom, currentLevel)
+		-- 部屋の中にあるストーリー用小物（Chair, Pipe, Ventなど）を探す
+		local storyObjects = {}
+		for _, obj in ipairs(newRoom:GetDescendants()) do
+			if obj.Name == "Chair" or obj.Name == "Pipe" or obj.Name == "Vent" then
+				-- 最初はすべて隠しておく
+				if obj:IsA("BasePart") then
+					obj.Transparency = 1
+					obj.CanCollide = false
+				elseif obj:IsA("Model") then
+					for _, p in ipairs(obj:GetDescendants()) do
+						if p:IsA("BasePart") then
+							p.Transparency = 1
+							p.CanCollide = false
+						end
+					end
+				end
+				table.insert(storyObjects, obj)
+			end
+		end
+
+		-- ★ 階層が進むほど、出現する物の最大数を増やす計算
+		-- 例: Floor 1は0〜1個、Floor 5は2〜4個、Floor 9はすべて出る可能性がある...など
+		local appearanceCount = math.random(math.floor(currentLevel / 3), math.min(#storyObjects, currentLevel))
+
+		-- リストをシャッフルしてランダムに選ぶ
+		for i = #storyObjects, 2, -1 do
+			local j = math.random(i)
+			storyObjects[i], storyObjects[j] = storyObjects[j], storyObjects[i]
+		end
+
+		-- 選ばれた数だけ「実体化」させる
+		for i = 1, math.min(appearanceCount, #storyObjects) do
+			local obj = storyObjects[i]
+			if obj:IsA("BasePart") then
+				obj.Transparency = 0
+				obj.CanCollide = true
+			elseif obj:IsA("Model") then
+				for _, p in ipairs(obj:GetDescendants()) do
+					if p:IsA("BasePart") then
+						p.Transparency = 0
+						p.CanCollide = true
+					end
+				end
+			end
+		end
+	end
 	newRoom.Name = "Room_" .. player.Name
 	newRoom.Parent = workspace
 	newRoom:PivotTo(CFrame.new(0, 100, 0))
+	setupEnvironmentalStorytelling(newRoom, state.Level)
 	state.CurrentRoom = newRoom
 
 	local floor = newRoom:WaitForChild("Floor", 5)
